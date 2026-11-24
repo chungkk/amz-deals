@@ -1,4 +1,4 @@
-import { getSettings, knownMap } from "@/lib/db";
+import { getEnabledSources, getSettings, knownMap } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +9,7 @@ export function GET() {
     settings: {
       retentionDays: s.retentionDays,
       crawlPages: s.crawlPages,
+      sources: getEnabledSources(s),
     },
   });
 }

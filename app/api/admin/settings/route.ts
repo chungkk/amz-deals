@@ -15,6 +15,8 @@ export async function POST(req: Request) {
     crawlIntervalMin: body.crawlIntervalMin,
     serverCrawlEnabled: body.serverCrawlEnabled,
     amazonTag: body.amazonTag,
+    enableMydealz: body.enableMydealz,
+    enableMeindeal: body.enableMeindeal,
   });
 
   rescheduleScheduler();

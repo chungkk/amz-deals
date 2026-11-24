@@ -16,8 +16,9 @@ const krData = await kr.json();
 const known = new Map(krData.known);
 const pages = Number(process.env.CRAWL_PAGES || krData.settings?.crawlPages || 3);
 const maxAgeDays = Number(process.env.RETENTION_DAYS || krData.settings?.retentionDays || 2);
+const sources = Array.isArray(krData.settings?.sources) ? krData.settings.sources : ["mydealz", "meindeal"];
 
-const deals = await crawl({ pages, maxAgeDays, known, log });
+const deals = await crawl({ pages, maxAgeDays, sources, known, log });
 const r = await fetch(`${base}/api/ingest`, {
   method: "POST",
   headers,

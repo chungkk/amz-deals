@@ -1,5 +1,5 @@
 import { crawl } from "./crawler.mjs";
-import { getSettings, knownMap, pruneOldDeals, recordRun, upsertDeals, type DealIn } from "./db";
+import { getEnabledSources, getSettings, knownMap, pruneOldDeals, recordRun, upsertDeals, type DealIn } from "./db";
 
 type SchedulerState = {
   running: boolean;
@@ -31,15 +31,21 @@ export async function runCrawl(source = "server") {
   state.running = true;
   const logs: string[] = [];
   try {
-    const { crawlPages, retentionDays } = getSettings();
+    const settings = getSettings();
+    const sources = getEnabledSources(settings);
+    if (sources.length === 0) {
+      recordRun(source, false, 0, 0, "Chưa bật nguồn crawl nào (mydealz / mein-deal)");
+      return { ok: false, error: "No sources enabled" };
+    }
     const deals = (await crawl({
-      pages: crawlPages,
-      maxAgeDays: retentionDays,
+      pages: settings.crawlPages,
+      maxAgeDays: settings.retentionDays,
+      sources,
       known: knownMap(),
       log: (m: string) => (logs.push(m), console.log(`[crawl] ${m}`)),
     })) as DealIn[];
     const r = upsertDeals(deals);
-    const pruned = pruneOldDeals(retentionDays);
+    const pruned = pruneOldDeals(settings.retentionDays);
     if (pruned > 0) logs.push(`pruned ${pruned} old deal(s)`);
     recordRun(source, true, r.count, r.added, logs.join("; "));
     return { ok: true, ...r, pruned };
@@ -59,12 +65,15 @@ export function rescheduleScheduler() {
   state.crawlTimer = undefined;
   state.startupTimer = undefined;
 
-  const { serverCrawlEnabled, crawlIntervalMin, retentionDays } = getSettings();
-  if (serverCrawlEnabled && crawlIntervalMin > 0) {
-    console.log(`[crawl] server scheduler enabled: every ${crawlIntervalMin} min (retention ${retentionDays}d)`);
-    state.crawlTimer = setInterval(() => void runCrawl("server"), crawlIntervalMin * 60_000);
+  const settings = getSettings();
+  const sources = getEnabledSources(settings);
+  if (settings.serverCrawlEnabled && settings.crawlIntervalMin > 0) {
+    console.log(
+      `[crawl] server scheduler enabled: every ${settings.crawlIntervalMin} min (retention ${settings.retentionDays}d, sources: ${sources.join(",") || "none"})`,
+    );
+    state.crawlTimer = setInterval(() => void runCrawl("server"), settings.crawlIntervalMin * 60_000);
   } else {
-    console.log(`[crawl] server scheduler disabled (auto-prune active every 30 min, retention ${retentionDays}d)`);
+    console.log(`[crawl] server scheduler disabled (auto-prune active every 30 min, retention ${settings.retentionDays}d)`);
   }
 }
 

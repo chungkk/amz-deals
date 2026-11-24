@@ -40,27 +40,36 @@ function fmtBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function dealSourceUrl(d: DealRow) {
+  if (d.source_url) return d.source_url;
+  if (d.source === "meindeal") return `https://www.mein-deal.com/?p=${Math.abs(d.thread_id)}`;
+  return `https://www.mydealz.de/deals/${d.slug ? d.slug + "-" : ""}${d.thread_id}`;
+}
+
 export default function AdminClient({ initial }: { initial: AdminPayload }) {
   const [data, setData] = useState<AdminPayload>(initial);
   const [form, setForm] = useState<AppSettings>(initial.settings);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ type: "ok" | "err"; text: string } | null>(null);
 
   const refresh = useCallback(
-    async (opts?: { q?: string; filter?: string }) => {
+    async (opts?: { q?: string; filter?: string; source?: string }) => {
       const nextQ = opts?.q ?? q;
       const nextFilter = opts?.filter ?? filter;
+      const nextSource = opts?.source ?? sourceFilter;
       const p = new URLSearchParams();
       if (nextQ.trim()) p.set("q", nextQ.trim());
       if (nextFilter !== "all") p.set("filter", nextFilter);
+      if (nextSource !== "all") p.set("source", nextSource);
       const res = await fetch(`/api/admin?${p}`, { cache: "no-store" });
       if (!res.ok) return;
       const json = (await res.json()) as AdminPayload;
       setData(json);
     },
-    [q, filter],
+    [q, filter, sourceFilter],
   );
 
   // Poll gently while a server crawl is active
@@ -119,7 +128,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    void refresh({ q, filter });
+    void refresh({ q, filter, source: sourceFilter });
   }
 
   const { stats, runs, deals, settings, crawling } = data;
@@ -152,12 +161,16 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
         <div className="kpi">
           <div className="kpi-label">Tổng deal trong kho</div>
           <div className="kpi-val">{stats.total}</div>
-          <div className="kpi-sub">Còn hạn: {stats.active} · Hết hạn: {stats.expired}</div>
+          <div className="kpi-sub">
+            mydealz: {stats.bySource.mydealz} · mein-deal: {stats.bySource.meindeal}
+          </div>
         </div>
         <div className="kpi">
-          <div className="kpi-label">Đã map Amazon</div>
-          <div className="kpi-val">{stats.withAsin}</div>
-          <div className="kpi-sub">Có tên AMZ: {stats.withAmzTitle} · Không ASIN: {stats.noAsin}</div>
+          <div className="kpi-label">Trạng thái &amp; Amazon</div>
+          <div className="kpi-val">{stats.withAsin} ASIN</div>
+          <div className="kpi-sub">
+            Còn hạn: {stats.active} · Hết hạn: {stats.expired} · Thiếu ASIN: {stats.noAsin}
+          </div>
         </div>
         <div className="kpi">
           <div className="kpi-label">Quá hạn giữ (&gt; {settings.retentionDays} ngày)</div>
@@ -193,7 +206,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               />
             </label>
             <label className="field">
-              <span>Số trang mydealz mỗi lần lấy</span>
+              <span>Số trang mỗi nguồn / lần lấy</span>
               <input
                 type="number"
                 min={1}
@@ -222,20 +235,38 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               />
             </label>
           </div>
-          <label className="chk" style={{ marginTop: 10 }}>
-            <input
-              type="checkbox"
-              checked={form.serverCrawlEnabled}
-              onChange={(e) => setForm({ ...form, serverCrawlEnabled: e.target.checked })}
-            />
-            Bật auto crawl ngay trên server (đi qua Cloudflare WARP proxy <code>warp:1080</code>)
-          </label>
+          <div className="chk-group">
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.enableMydealz}
+                onChange={(e) => setForm({ ...form, enableMydealz: e.target.checked })}
+              />
+              Lấy deal Amazon từ <strong>mydealz.de</strong>
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.enableMeindeal}
+                onChange={(e) => setForm({ ...form, enableMeindeal: e.target.checked })}
+              />
+              Lấy deal Amazon từ <strong>mein-deal.com</strong>
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.serverCrawlEnabled}
+                onChange={(e) => setForm({ ...form, serverCrawlEnabled: e.target.checked })}
+              />
+              Bật auto crawl ngay trên server (đi qua Cloudflare WARP proxy <code>warp:1080</code>)
+            </label>
+          </div>
           <div className="panel-foot">
             <button className="btn btn-primary" type="submit" disabled={busy}>
               Lưu cấu hình
             </button>
             <span className="meta">
-              Script <code>scripts/push.mjs</code> sẽ tự đồng bộ số ngày giữ ({form.retentionDays}d) và số trang ({form.crawlPages}) từ cấu hình này.
+              Áp dụng ngay cho cả server scheduler và <code>scripts/push.mjs</code>.
             </span>
           </div>
         </form>
@@ -291,10 +322,10 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
             </button>
           </div>
           <div className="info-box">
-            <strong>Lịch auto 2 tiếng/lần trên máy Mac:</strong>
+            <strong>Nguồn dữ liệu &amp; Tự động hoá:</strong>
             <div>
-              Chạy <code>npm run auto:install</code> để cài LaunchAgent (<code>StartInterval = 7200s</code>),
-              xem log bằng <code>npm run auto:logs</code>.
+              Server tự crawl <strong>mydealz.de</strong> + <strong>mein-deal.com</strong> (chỉ deal Amazon) qua WARP proxy mỗi{" "}
+              <code>{settings.crawlIntervalMin} phút</code>, tự xoá dữ liệu cũ sau <code>{settings.retentionDays} ngày</code>.
             </div>
           </div>
         </div>
@@ -306,19 +337,31 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
           <form className="admin-search" onSubmit={handleSearch}>
             <input
               type="search"
-              placeholder="Tìm tên, ASIN, thread ID…"
+              placeholder="Tìm tên, ASIN, ID…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
+            <select
+              value={sourceFilter}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSourceFilter(next);
+                void refresh({ q, filter, source: next });
+              }}
+            >
+              <option value="all">Mọi nguồn</option>
+              <option value="mydealz">mydealz</option>
+              <option value="meindeal">mein-deal</option>
+            </select>
             <select
               value={filter}
               onChange={(e) => {
                 const next = e.target.value;
                 setFilter(next);
-                void refresh({ q, filter: next });
+                void refresh({ q, filter: next, source: sourceFilter });
               }}
             >
-              <option value="all">Tất cả</option>
+              <option value="all">Tất cả trạng thái</option>
               <option value="active">Còn hạn</option>
               <option value="expired">Đã hết hạn</option>
               <option value="no_asin">Thiếu ASIN</option>
@@ -334,9 +377,9 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
             <thead>
               <tr>
                 <th>Deal</th>
+                <th>Nguồn</th>
                 <th>ASIN</th>
                 <th>Giá</th>
-                <th>Nhiệt</th>
                 <th>Đăng lúc</th>
                 <th>Trạng thái</th>
                 <th>Thao tác</th>
@@ -353,25 +396,30 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               {deals.map((d) => {
                 const img = d.amz_image || d.md_image;
                 const amzHref = d.asin ? `https://www.amazon.de/dp/${d.asin}` : null;
-                const mdHref = `https://www.mydealz.de/deals/${d.slug ? d.slug + "-" : ""}${d.thread_id}`;
+                const srcHref = dealSourceUrl(d);
                 return (
                   <tr key={d.thread_id} className={d.is_expired ? "row-expired" : ""}>
                     <td>
                       <div className="deal-cell">
                         {img && <img className="thumb" src={img} alt="" loading="lazy" referrerPolicy="no-referrer" />}
                         <div className="deal-cell-txt">
-                          <a href={amzHref || mdHref} target="_blank" rel="noopener noreferrer" className="deal-cell-title">
+                          <a href={amzHref || srcHref} target="_blank" rel="noopener noreferrer" className="deal-cell-title">
                             {d.amz_title || d.md_title}
                           </a>
                           <div className="meta">
-                            #{d.thread_id} ·{" "}
-                            <a href={mdHref} target="_blank" rel="noopener noreferrer">
-                              mydealz
+                            #{Math.abs(d.thread_id)} ·{" "}
+                            <a href={srcHref} target="_blank" rel="noopener noreferrer">
+                              {d.source === "meindeal" ? "mein-deal" : `mydealz (${d.temperature}°)`}
                             </a>
                             {d.voucher_code ? ` · Code: ${d.voucher_code}` : ""}
                           </div>
                         </div>
                       </div>
+                    </td>
+                    <td className="nowrap">
+                      <span className={`src-badge ${d.source === "meindeal" ? "src-meindeal" : "src-mydealz"}`}>
+                        {d.source === "meindeal" ? "mein-deal" : "mydealz"}
+                      </span>
                     </td>
                     <td>
                       {d.asin ? (
@@ -390,7 +438,6 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                         <div className="meta"><s>{eur(d.old_price)}</s></div>
                       )}
                     </td>
-                    <td className="nowrap">{d.temperature}°</td>
                     <td className="nowrap">
                       <div>{fmtTime(d.published_at || d.first_seen)}</div>
                       <div className="meta">{ago(d.published_at || d.first_seen)}</div>

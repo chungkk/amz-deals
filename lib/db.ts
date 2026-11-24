@@ -15,6 +15,8 @@ export function db(): DatabaseSync {
     PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS deals (
       thread_id     INTEGER PRIMARY KEY,
+      source        TEXT NOT NULL DEFAULT 'mydealz',
+      source_url    TEXT,
       asin          TEXT,
       no_asin       INTEGER NOT NULL DEFAULT 0,
       amz_title     TEXT,
@@ -50,9 +52,24 @@ export function db(): DatabaseSync {
       value TEXT NOT NULL
     );
   `);
+
+  // Safe migration for existing databases created before multi-source support
+  const cols = new Set(
+    (d.prepare("PRAGMA table_info(deals)").all() as { name: string }[]).map((c) => c.name),
+  );
+  if (!cols.has("source")) {
+    d.exec("ALTER TABLE deals ADD COLUMN source TEXT NOT NULL DEFAULT 'mydealz'");
+  }
+  if (!cols.has("source_url")) {
+    d.exec("ALTER TABLE deals ADD COLUMN source_url TEXT");
+  }
+  d.exec("CREATE INDEX IF NOT EXISTS deals_source ON deals(source)");
+
   g.__dealsDb = d;
   return d;
 }
+
+export type DealSource = "mydealz" | "meindeal";
 
 export type AppSettings = {
   retentionDays: number;
@@ -60,6 +77,8 @@ export type AppSettings = {
   crawlIntervalMin: number;
   serverCrawlEnabled: boolean;
   amazonTag: string;
+  enableMydealz: boolean;
+  enableMeindeal: boolean;
 };
 
 const clamp = (v: number, min: number, max: number, fallback: number) =>
@@ -73,6 +92,8 @@ function envDefaults(): AppSettings {
     crawlIntervalMin: envInterval > 0 ? clamp(envInterval, 15, 1440, 120) : 120,
     serverCrawlEnabled: envInterval > 0,
     amazonTag: (process.env.AMAZON_TAG || "").trim(),
+    enableMydealz: true,
+    enableMeindeal: true,
   };
 }
 
@@ -88,7 +109,16 @@ export function getSettings(): AppSettings {
       : defs.crawlIntervalMin,
     serverCrawlEnabled: map.has("server_crawl_enabled") ? map.get("server_crawl_enabled") === "1" : defs.serverCrawlEnabled,
     amazonTag: map.has("amazon_tag") ? String(map.get("amazon_tag") ?? "").trim() : defs.amazonTag,
+    enableMydealz: map.has("enable_mydealz") ? map.get("enable_mydealz") === "1" : defs.enableMydealz,
+    enableMeindeal: map.has("enable_meindeal") ? map.get("enable_meindeal") === "1" : defs.enableMeindeal,
   };
+}
+
+export function getEnabledSources(s: AppSettings = getSettings()): DealSource[] {
+  const out: DealSource[] = [];
+  if (s.enableMydealz) out.push("mydealz");
+  if (s.enableMeindeal) out.push("meindeal");
+  return out;
 }
 
 export function updateSettings(patch: Partial<AppSettings>): AppSettings {
@@ -100,6 +130,8 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
       patch.crawlIntervalMin !== undefined ? clamp(Number(patch.crawlIntervalMin), 15, 1440, cur.crawlIntervalMin) : cur.crawlIntervalMin,
     serverCrawlEnabled: patch.serverCrawlEnabled !== undefined ? Boolean(patch.serverCrawlEnabled) : cur.serverCrawlEnabled,
     amazonTag: patch.amazonTag !== undefined ? String(patch.amazonTag).trim().slice(0, 100) : cur.amazonTag,
+    enableMydealz: patch.enableMydealz !== undefined ? Boolean(patch.enableMydealz) : cur.enableMydealz,
+    enableMeindeal: patch.enableMeindeal !== undefined ? Boolean(patch.enableMeindeal) : cur.enableMeindeal,
   };
   const d = db();
   const stmt = d.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
@@ -110,6 +142,8 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
     stmt.run("crawl_interval_min", String(next.crawlIntervalMin));
     stmt.run("server_crawl_enabled", next.serverCrawlEnabled ? "1" : "0");
     stmt.run("amazon_tag", next.amazonTag);
+    stmt.run("enable_mydealz", next.enableMydealz ? "1" : "0");
+    stmt.run("enable_meindeal", next.enableMeindeal ? "1" : "0");
     d.exec("COMMIT");
   } catch (e) {
     d.exec("ROLLBACK");
@@ -120,6 +154,8 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
 
 export type DealIn = {
   threadId: number;
+  source?: string;
+  sourceUrl?: string | null;
   mdTitle: string;
   slug?: string | null;
   price?: number | null;
@@ -140,6 +176,8 @@ export type DealIn = {
 
 export type DealRow = {
   thread_id: number;
+  source: string;
+  source_url: string | null;
   asin: string | null;
   no_asin: number;
   amz_title: string | null;
@@ -179,15 +217,17 @@ export function upsertDeals(deals: DealIn[]): { count: number; added: number; sk
 
   const exists = d.prepare("SELECT 1 FROM deals WHERE thread_id = ?");
   const stmt = d.prepare(`
-    INSERT INTO deals (thread_id, asin, no_asin, amz_title, amz_image, md_title, md_image, slug, price, old_price,
+    INSERT INTO deals (thread_id, source, source_url, asin, no_asin, amz_title, amz_image, md_title, md_image, slug, price, old_price,
       percentage, temperature, published_at, hot_date, is_expired, comment_count, voucher_code, first_seen, last_seen)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(thread_id) DO UPDATE SET
+      source = excluded.source,
+      source_url = COALESCE(excluded.source_url, deals.source_url),
       asin = COALESCE(excluded.asin, deals.asin),
       no_asin = CASE WHEN excluded.asin IS NOT NULL THEN 0 ELSE MAX(deals.no_asin, excluded.no_asin) END,
       amz_title = COALESCE(excluded.amz_title, deals.amz_title),
       amz_image = COALESCE(excluded.amz_image, deals.amz_image),
-      md_title = excluded.md_title, md_image = excluded.md_image, slug = excluded.slug,
+      md_title = excluded.md_title, md_image = COALESCE(excluded.md_image, deals.md_image), slug = excluded.slug,
       price = excluded.price, old_price = excluded.old_price, percentage = excluded.percentage,
       temperature = excluded.temperature, published_at = excluded.published_at, hot_date = excluded.hot_date,
       is_expired = excluded.is_expired, comment_count = excluded.comment_count,
@@ -205,8 +245,9 @@ export function upsertDeals(deals: DealIn[]): { count: number; added: number; sk
         continue;
       }
       if (!exists.get(x.threadId)) added++;
+      const src = x.source === "meindeal" ? "meindeal" : "mydealz";
       stmt.run(
-        x.threadId, n(x.asin), x.noAsin ? 1 : 0, n(x.amzTitle), n(x.amzImage), x.mdTitle, n(x.mdImage), n(x.slug),
+        x.threadId, src, n(x.sourceUrl), n(x.asin), x.noAsin ? 1 : 0, n(x.amzTitle), n(x.amzImage), x.mdTitle, n(x.mdImage), n(x.slug),
         n(x.price), n(x.oldPrice), n(x.percentage), x.temperature ?? 0, n(x.publishedAt), n(x.hotDate),
         x.isExpired ? 1 : 0, x.commentCount ?? 0, n(x.voucherCode), now, now,
       );
@@ -286,6 +327,7 @@ export type AdminStats = {
   oldestAt: number | null;
   newestAt: number | null;
   dbSizeBytes: number;
+  bySource: { mydealz: number; meindeal: number };
   lastOk: { at: number; source: string } | null;
   lastRun: CrawlRunRow | null;
 };
@@ -304,6 +346,8 @@ export function getAdminStats(): AdminStats {
         SUM(CASE WHEN no_asin = 1 THEN 1 ELSE 0 END) AS no_asin,
         SUM(CASE WHEN amz_title IS NOT NULL THEN 1 ELSE 0 END) AS with_amz_title,
         SUM(CASE WHEN COALESCE(published_at, first_seen) < ? THEN 1 ELSE 0 END) AS older_than_retention,
+        SUM(CASE WHEN source = 'mydealz' THEN 1 ELSE 0 END) AS src_mydealz,
+        SUM(CASE WHEN source = 'meindeal' THEN 1 ELSE 0 END) AS src_meindeal,
         MIN(COALESCE(published_at, first_seen)) AS oldest_at,
         MAX(COALESCE(published_at, first_seen)) AS newest_at
       FROM deals`,
@@ -334,6 +378,10 @@ export function getAdminStats(): AdminStats {
     oldestAt: row.oldest_at ?? null,
     newestAt: row.newest_at ?? null,
     dbSizeBytes,
+    bySource: {
+      mydealz: Number(row.src_mydealz ?? 0),
+      meindeal: Number(row.src_meindeal ?? 0),
+    },
     lastOk,
     lastRun,
   };
@@ -348,10 +396,12 @@ export function getRecentRuns(limit = 30): CrawlRunRow[] {
 export function listDealsAdmin({
   q = "",
   filter = "all",
+  source = "all",
   limit = 100,
 }: {
   q?: string;
   filter?: string;
+  source?: string;
   limit?: number;
 } = {}): DealRow[] {
   const where: string[] = [];
@@ -359,6 +409,10 @@ export function listDealsAdmin({
   if (filter === "active") where.push("is_expired = 0");
   else if (filter === "expired") where.push("is_expired = 1");
   else if (filter === "no_asin") where.push("asin IS NULL");
+  if (source === "mydealz" || source === "meindeal") {
+    where.push("source = ?");
+    args.push(source);
+  }
   if (q.trim()) {
     where.push("(COALESCE(amz_title,'') || ' ' || md_title || ' ' || COALESCE(asin,'') || ' ' || CAST(thread_id AS TEXT)) LIKE ?");
     args.push(`%${q.trim()}%`);

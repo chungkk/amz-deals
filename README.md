@@ -1,8 +1,8 @@
 # amz-deals
 
-Deal Amazon lấy từ mydealz.de (`/search/deals?merchant-id=3`), dùng riêng. https://deals.halle.biz (basic auth).
+Deal Amazon lấy từ **mydealz.de** (`/search/deals?merchant-id=3`) và **mein-deal.com** (WordPress REST API tag `Amazon`), dùng riêng. https://deals.halle.biz (basic auth).
 
-- `lib/crawler.mjs`: lấy danh sách deal (JSON trong `data-vue3`), ASIN qua redirect `/visit/threadmain/<id>`, tên + ảnh từ `amazon.de/dp/<ASIN>`. Bỏ qua các deal cũ hơn `retentionDays` (mặc định 2 ngày).
+- `lib/crawler.mjs`: lấy danh sách deal Amazon từ mydealz.de (`data-vue3`) và mein-deal.com (`wp-json/wp/v2/posts?tags=43684`), phân giải ASIN qua redirect outbound, lấy tên + ảnh từ `amazon.de/dp/<ASIN>`. Bỏ qua các deal cũ hơn `retentionDays` (mặc định 2 ngày).
 - `lib/db.ts`: SQLite (`node:sqlite`), bảng `deals`, `crawl_runs`, `settings`. Trên VPS ở volume `amz-deals_amz-deals-data` (`/app/data/deals.db`).
 - **Tự động xoá dữ liệu cũ sau 2 ngày**: server tự động chạy `pruneOldDeals()` mỗi 30 phút (và sau mỗi lần `ingest`/`crawl`), có thể chỉnh số ngày giữ dữ liệu tại trang `/admin`.
 - **Trang Admin (`/admin`)**: xem thống kê, cấu hình số ngày giữ dữ liệu / số trang crawl / lịch crawl server / Amazon tag, chạy thao tác dọn dữ liệu nhanh, quản lý từng deal (ẩn/hiện/xoá/reset ASIN) và xem lịch sử chạy.

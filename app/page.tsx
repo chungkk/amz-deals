@@ -19,6 +19,12 @@ const RANGES: Record<string, { label: string; sec: number }> = {
   all: { label: "Tất cả", sec: 0 },
 };
 
+const SOURCES: Record<string, { label: string }> = {
+  all: { label: "Mọi nguồn" },
+  mydealz: { label: "mydealz" },
+  meindeal: { label: "mein-deal" },
+};
+
 const eur = (v: number | null) =>
   v == null ? "" : v.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
 
@@ -42,11 +48,18 @@ function amazonUrl(asin: string, tag: string) {
   return `https://www.amazon.de/dp/${asin}${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`;
 }
 
+function dealSourceUrl(d: DealRow) {
+  if (d.source_url) return d.source_url;
+  if (d.source === "meindeal") return `https://www.mein-deal.com/?p=${Math.abs(d.thread_id)}`;
+  return `https://www.mydealz.de/deals/${d.slug ? d.slug + "-" : ""}${d.thread_id}`;
+}
+
 export default async function Page({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
   const settings = getSettings();
   const sort = SORTS[one(sp.sort)] ? one(sp.sort) : "new";
   const range = RANGES[one(sp.d)] ? one(sp.d) : "2";
+  const src = SOURCES[one(sp.src)] ? one(sp.src) : "all";
   const q = one(sp.q).trim();
   const minTemp = Number(one(sp.t)) || 0;
   const showExpired = one(sp.exp) === "1";
@@ -54,6 +67,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
   const where: string[] = [];
   const args: (string | number)[] = [];
   if (!showExpired) where.push("is_expired = 0");
+  if (src !== "all") (where.push("source = ?"), args.push(src));
   if (RANGES[range].sec) (where.push("published_at > ?"), args.push(Math.floor(Date.now() / 1000) - RANGES[range].sec));
   if (minTemp) (where.push("temperature >= ?"), args.push(minTemp));
   if (q) {
@@ -75,8 +89,15 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
     | undefined;
 
   const link = (patch: Record<string, string>) => {
-    const p = new URLSearchParams({ sort, d: range, ...(q && { q }), ...(minTemp && { t: String(minTemp) }), ...(showExpired && { exp: "1" }) });
-    for (const [k, v] of Object.entries(patch)) v ? p.set(k, v) : p.delete(k);
+    const p = new URLSearchParams({
+      sort,
+      d: range,
+      ...(src !== "all" && { src }),
+      ...(q && { q }),
+      ...(minTemp && { t: String(minTemp) }),
+      ...(showExpired && { exp: "1" }),
+    });
+    for (const [k, v] of Object.entries(patch)) v && !(k === "src" && v === "all") ? p.set(k, v) : p.delete(k);
     return `/?${p}`;
   };
 
@@ -105,6 +126,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
           </label>
           <input type="hidden" name="sort" value={sort} />
           <input type="hidden" name="d" value={range} />
+          {src !== "all" && <input type="hidden" name="src" value={src} />}
           <button>Lọc</button>
         </form>
         <nav className="tabs">
@@ -115,6 +137,10 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
           {Object.entries(RANGES).map(([k, v]) => (
             <a key={k} href={link({ d: k })} className={k === range ? "on" : ""}>{v.label}</a>
           ))}
+          <span className="sep" />
+          {Object.entries(SOURCES).map(([k, v]) => (
+            <a key={k} href={link({ src: k })} className={k === src ? "on" : ""}>{v.label}</a>
+          ))}
         </nav>
       </header>
 
@@ -123,7 +149,12 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
       <ul className="grid">
         {deals.map((d) => {
           const img = d.amz_image || d.md_image;
-          const href = d.asin ? amazonUrl(d.asin, settings.amazonTag) : `https://www.mydealz.de/visit/threadmain/${d.thread_id}`;
+          const srcUrl = dealSourceUrl(d);
+          const href = d.asin
+            ? amazonUrl(d.asin, settings.amazonTag)
+            : d.source === "meindeal"
+              ? srcUrl
+              : `https://www.mydealz.de/visit/threadmain/${d.thread_id}`;
           return (
             <li key={d.thread_id} className={d.is_expired ? "card expired" : "card"}>
               <a className="img" href={href} target="_blank" rel="noopener noreferrer">
@@ -132,7 +163,11 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
               </a>
               <div className="body">
                 <div className="row">
-                  <span className={tempClass(d.temperature)}>{d.temperature}°</span>
+                  {d.source === "meindeal" ? (
+                    <span className="src-badge src-meindeal">mein-deal</span>
+                  ) : (
+                    <span className={tempClass(d.temperature)}>{d.temperature}°</span>
+                  )}
                   <span className="when">{ago(d.published_at)}</span>
                 </div>
                 <a className="title" href={href} target="_blank" rel="noopener noreferrer" title={d.md_title}>
@@ -145,8 +180,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                 {d.voucher_code && <div className="code">Code: <code>{d.voucher_code}</code></div>}
                 <div className="links">
                   {d.asin ? <a href={href} target="_blank" rel="noopener noreferrer">Amazon ↗</a> : <span className="muted">không có ASIN</span>}
-                  <a href={`https://www.mydealz.de/deals/${d.slug ? d.slug + "-" : ""}${d.thread_id}`} target="_blank" rel="noopener noreferrer">
-                    mydealz · {d.comment_count} 💬
+                  <a href={srcUrl} target="_blank" rel="noopener noreferrer">
+                    {d.source === "meindeal" ? "mein-deal ↗" : `mydealz · ${d.comment_count} 💬`}
                   </a>
                 </div>
               </div>
