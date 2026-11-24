@@ -191,9 +191,6 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                       voucher={d.voucher_code}
                     />
                   )}
-                  <a href={srcUrl} target="_blank" rel="noopener noreferrer">
-                    {d.source === "meindeal" ? "mein-deal ↗" : `mydealz · ${d.comment_count} 💬`}
-                  </a>
                 </div>
               </div>
             </li>
