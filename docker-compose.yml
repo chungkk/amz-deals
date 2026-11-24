@@ -7,6 +7,11 @@ services:
     container_name: amz-deals
     restart: unless-stopped
     env_file: .env
+    environment:
+      NODE_USE_ENV_PROXY: "1"
+      HTTP_PROXY: ${WARP_PROXY:-http://warp:1080}
+      HTTPS_PROXY: ${WARP_PROXY:-http://warp:1080}
+      NO_PROXY: localhost,127.0.0.1
     volumes:
       - amz-deals-data:/app/data
     networks: [coolify]

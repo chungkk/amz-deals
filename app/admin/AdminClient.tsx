@@ -228,7 +228,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               checked={form.serverCrawlEnabled}
               onChange={(e) => setForm({ ...form, serverCrawlEnabled: e.target.checked })}
             />
-            Bật auto crawl ngay trên server (tắt nếu IP VPS bị mydealz chặn 403 và đang dùng máy Mac push 2 giờ/lần)
+            Bật auto crawl ngay trên server (đi qua Cloudflare WARP proxy <code>warp:1080</code>)
           </label>
           <div className="panel-foot">
             <button className="btn btn-primary" type="submit" disabled={busy}>

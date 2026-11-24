@@ -6,7 +6,8 @@ Deal Amazon lấy từ mydealz.de (`/search/deals?merchant-id=3`), dùng riêng.
 - `lib/db.ts`: SQLite (`node:sqlite`), bảng `deals`, `crawl_runs`, `settings`. Trên VPS ở volume `amz-deals_amz-deals-data` (`/app/data/deals.db`).
 - **Tự động xoá dữ liệu cũ sau 2 ngày**: server tự động chạy `pruneOldDeals()` mỗi 30 phút (và sau mỗi lần `ingest`/`crawl`), có thể chỉnh số ngày giữ dữ liệu tại trang `/admin`.
 - **Trang Admin (`/admin`)**: xem thống kê, cấu hình số ngày giữ dữ liệu / số trang crawl / lịch crawl server / Amazon tag, chạy thao tác dọn dữ liệu nhanh, quản lý từng deal (ẩn/hiện/xoá/reset ASIN) và xem lịch sử chạy.
-- **Tự động lấy deal mỗi 2 tiếng trên máy Mac** (vì IP VPS Oracle bị mydealz chặn 403 & Amazon trả captcha):
+- **Cloudflare WARP trên VPS (`oracle-a1`)**: chạy container `caomingjun/warp` tại `~/warp/docker-compose.yml` trên network `coolify` (`http://warp:1080` và `127.0.0.1:1080`). Container `amz-deals` tự bật `NODE_USE_ENV_PROXY=1` đi qua `http://warp:1080` để crawl tự động mỗi 2 tiếng (`CRAWL_INTERVAL_MIN=120`) mà không bị IP Oracle 403.
+- **Tự động lấy deal từ máy Mac (tuỳ chọn/dự phòng)**:
   ```bash
   npm run auto:install   # cài macOS LaunchAgent chạy mỗi 2 giờ (7200s)
   npm run auto:run       # chạy đẩy dữ liệu ngay lập tức
