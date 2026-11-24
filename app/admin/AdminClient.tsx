@@ -55,6 +55,8 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
   const [sourceFilter, setSourceFilter] = useState("all");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [showPw, setShowPw] = useState(false);
+  const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
 
   const refresh = useCallback(
     async (opts?: { q?: string; filter?: string; source?: string }) => {
@@ -127,6 +129,31 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
     }
   }
 
+  async function changePassword(e: React.FormEvent) {
+    e.preventDefault();
+    if (pw.next !== pw.confirm) {
+      showMsg("err", "Mật khẩu mới nhập lại không khớp.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/password", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ current: pw.current, next: pw.next }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setPw({ current: "", next: "", confirm: "" });
+      setShowPw(false);
+      showMsg("ok", json.message || "Đã đổi mật khẩu.");
+    } catch (err) {
+      showMsg("err", err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     void refresh({ q, filter, source: sourceFilter });
@@ -148,8 +175,60 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
           <button className="btn" type="button" disabled={busy} onClick={() => void refresh()}>
             Làm mới
           </button>
+          <button className="btn" type="button" onClick={() => setShowPw((v) => !v)}>
+            Đổi mật khẩu
+          </button>
         </div>
       </header>
+
+      {showPw && (
+        <form className="panel" onSubmit={changePassword}>
+          <h2>Đổi mật khẩu đăng nhập</h2>
+          <div className="field-grid">
+            <label className="field">
+              <span>Mật khẩu hiện tại</span>
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                value={pw.current}
+                onChange={(e) => setPw({ ...pw, current: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              <span>Mật khẩu mới (tối thiểu 8 ký tự)</span>
+              <input
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={8}
+                value={pw.next}
+                onChange={(e) => setPw({ ...pw, next: e.target.value })}
+              />
+            </label>
+            <label className="field">
+              <span>Nhập lại mật khẩu mới</span>
+              <input
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={8}
+                value={pw.confirm}
+                onChange={(e) => setPw({ ...pw, confirm: e.target.value })}
+              />
+            </label>
+          </div>
+          <div className="panel-foot">
+            <button className="btn btn-primary" type="submit" disabled={busy}>
+              Lưu mật khẩu mới
+            </button>
+            <button className="btn btn-ghost" type="button" onClick={() => setShowPw(false)}>
+              Huỷ
+            </button>
+            <span className="meta">Áp dụng cho toàn bộ trang. Script push dùng INGEST_TOKEN nên không bị ảnh hưởng.</span>
+          </div>
+        </form>
+      )}
 
       {notice && (
         <div className={`notice ${notice.type === "err" ? "notice-err" : "notice-ok"}`}>

@@ -1,5 +1,6 @@
 # Amazon deals (from mydealz.de): https://deals.halle.biz on VPS 2 (oracle-a1), outside Coolify.
-# Deploy: ./deploy.sh  ·  Secrets in ~/amz-deals/.env on the VPS (BASIC_AUTH_USERS, INGEST_TOKEN, ...)
+# Deploy: ./deploy.sh  ·  Secrets in ~/amz-deals/.env on the VPS (INGEST_TOKEN, ADMIN_PASSWORD for first boot, ...)
+# Basic auth is done by the app (proxy.ts); the password is stored hashed in SQLite and changed from /admin.
 services:
   web:
     build: .
@@ -19,7 +20,6 @@ services:
       traefik.enable: "true"
       traefik.docker.network: coolify
       traefik.http.middlewares.amzdeals-redir.redirectscheme.scheme: https
-      traefik.http.middlewares.amzdeals-auth.basicauth.users: ${BASIC_AUTH_USERS}
       traefik.http.routers.amzdeals-http.entrypoints: http
       traefik.http.routers.amzdeals-http.rule: Host(`deals.halle.biz`)
       traefik.http.routers.amzdeals-http.middlewares: amzdeals-redir
@@ -27,7 +27,6 @@ services:
       traefik.http.routers.amzdeals.rule: Host(`deals.halle.biz`)
       traefik.http.routers.amzdeals.tls: "true"
       traefik.http.routers.amzdeals.tls.certresolver: letsencrypt
-      traefik.http.routers.amzdeals.middlewares: amzdeals-auth
       traefik.http.services.amzdeals.loadbalancer.server.port: "3000"
 
 volumes:

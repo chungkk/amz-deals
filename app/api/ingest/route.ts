@@ -2,8 +2,8 @@ import { getSettings, pruneOldDeals, recordRun, upsertDeals, type DealIn } from 
 
 export const dynamic = "force-dynamic";
 
-// Receives deals crawled elsewhere (scripts/push.mjs). The whole site sits behind Traefik basic auth;
-// INGEST_TOKEN is an extra check for this write endpoint.
+// Receives deals crawled elsewhere (scripts/push.mjs). The whole site sits behind basic auth (proxy.ts),
+// which this endpoint also lets through with a valid x-ingest-token; the token is re-checked here.
 export async function POST(req: Request) {
   const token = process.env.INGEST_TOKEN;
   if (token && req.headers.get("x-ingest-token") !== token) {
