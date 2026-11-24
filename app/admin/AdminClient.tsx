@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import type { AdminStats, AppSettings, CrawlRunRow, DealRow } from "@/lib/db";
+import { CopyAffButtons } from "../CopyAffButton";
 
 type AdminPayload = {
   stats: AdminStats;
@@ -395,7 +396,9 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               )}
               {deals.map((d) => {
                 const img = d.amz_image || d.md_image;
-                const amzHref = d.asin ? `https://www.amazon.de/dp/${d.asin}` : null;
+                const amzHref = d.asin
+                  ? `https://amazon.de/dp/${d.asin}${settings.amazonTag ? `?tag=${encodeURIComponent(settings.amazonTag)}` : ""}`
+                  : null;
                 const srcHref = dealSourceUrl(d);
                 return (
                   <tr key={d.thread_id} className={d.is_expired ? "row-expired" : ""}>
@@ -423,9 +426,12 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                     </td>
                     <td>
                       {d.asin ? (
-                        <a href={amzHref!} target="_blank" rel="noopener noreferrer">
-                          <code>{d.asin}</code>
-                        </a>
+                        <div className="row-actions" style={{ alignItems: "center" }}>
+                          <a href={amzHref!} target="_blank" rel="noopener noreferrer">
+                            <code>{d.asin}</code>
+                          </a>
+                          <CopyAffButtons url={amzHref!} compact />
+                        </div>
                       ) : d.no_asin ? (
                         <span className="pill pill-warn">no_asin</span>
                       ) : (

@@ -1,4 +1,5 @@
 import { db, getSettings, type DealRow } from "@/lib/db";
+import { CopyAffButtons } from "./CopyAffButton";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +46,7 @@ function tempClass(t: number) {
 }
 
 function amazonUrl(asin: string, tag: string) {
-  return `https://www.amazon.de/dp/${asin}${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`;
+  return `https://amazon.de/dp/${asin}${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`;
 }
 
 function dealSourceUrl(d: DealRow) {
@@ -180,6 +181,16 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                 {d.voucher_code && <div className="code">Code: <code>{d.voucher_code}</code></div>}
                 <div className="links">
                   {d.asin ? <a href={href} target="_blank" rel="noopener noreferrer">Amazon ↗</a> : <span className="muted">không có ASIN</span>}
+                  {d.asin && (
+                    <CopyAffButtons
+                      url={href}
+                      title={d.amz_title || d.md_title}
+                      priceText={eur(d.price)}
+                      oldPriceText={d.old_price != null && d.old_price > (d.price ?? 0) ? eur(d.old_price) : ""}
+                      pct={d.pct}
+                      voucher={d.voucher_code}
+                    />
+                  )}
                   <a href={srcUrl} target="_blank" rel="noopener noreferrer">
                     {d.source === "meindeal" ? "mein-deal ↗" : `mydealz · ${d.comment_count} 💬`}
                   </a>

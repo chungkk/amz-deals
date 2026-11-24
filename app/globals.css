@@ -105,9 +105,15 @@ h2 { margin: 0 0 12px; font-size: 16px; }
 .price s { color: var(--muted); font-size: 13px; }
 .code { font-size: 12px; color: var(--muted); }
 .code code { background: var(--accent-soft); color: var(--accent); padding: 1px 6px; border-radius: 4px; }
-.links { display: flex; justify-content: space-between; font-size: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.links { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; font-size: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
 .links a { color: var(--muted); text-decoration: none; }
 .links a:hover { color: var(--accent); }
+.copy-wrap { display: inline-flex; gap: 4px; }
+.copy-btn {
+  font: inherit; font-size: 11px; padding: 1px 6px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--muted); cursor: pointer;
+}
+.copy-btn:hover { border-color: var(--accent); color: var(--accent); }
 .muted { color: var(--muted); }
 
 /* Admin Page */
