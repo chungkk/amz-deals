@@ -1,0 +1,24 @@
+{
+  "name": "amz-deals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "push": "node scripts/push.mjs",
+    "auto:install": "bash scripts/install-launchd.sh",
+    "auto:run": "bash scripts/push-cron.sh",
+    "auto:logs": "tail -n 50 ~/Library/Logs/amz-deals-push.log"
+  },
+  "dependencies": {
+    "next": "16.4.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@types/react": "^19",
+    "typescript": "^5"
+  }
+}
