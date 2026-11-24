@@ -358,14 +358,12 @@ export function getAdminStats(): AdminStats {
   const pageSize = (d.prepare("PRAGMA page_size").get() as { page_size?: number } | undefined)?.page_size ?? 0;
   const dbSizeBytes = Number(pageCount) * Number(pageSize);
 
-  const lastOk =
-    (d.prepare("SELECT at, source FROM crawl_runs WHERE ok = 1 ORDER BY id DESC LIMIT 1").get() as
-      | { at: number; source: string }
-      | undefined) ?? null;
-  const lastRun =
-    (d.prepare("SELECT id, at, source, ok, count, new, message FROM crawl_runs ORDER BY id DESC LIMIT 1").get() as
-      | CrawlRunRow
-      | undefined) ?? null;
+  const lastOkRow = d
+    .prepare("SELECT at, source FROM crawl_runs WHERE ok = 1 ORDER BY id DESC LIMIT 1")
+    .get() as { at: number; source: string } | undefined;
+  const lastRunRow = d
+    .prepare("SELECT id, at, source, ok, count, new, message FROM crawl_runs ORDER BY id DESC LIMIT 1")
+    .get() as CrawlRunRow | undefined;
 
   return {
     total: Number(row.total ?? 0),
@@ -382,15 +380,16 @@ export function getAdminStats(): AdminStats {
       mydealz: Number(row.src_mydealz ?? 0),
       meindeal: Number(row.src_meindeal ?? 0),
     },
-    lastOk,
-    lastRun,
+    lastOk: lastOkRow ? { at: Number(lastOkRow.at), source: String(lastOkRow.source) } : null,
+    lastRun: lastRunRow ? { ...lastRunRow } : null,
   };
 }
 
 export function getRecentRuns(limit = 30): CrawlRunRow[] {
-  return db()
+  const rows = db()
     .prepare("SELECT id, at, source, ok, count, new, message FROM crawl_runs ORDER BY id DESC LIMIT ?")
     .all(limit) as CrawlRunRow[];
+  return rows.map((r) => ({ ...r }));
 }
 
 export function listDealsAdmin({
@@ -419,5 +418,6 @@ export function listDealsAdmin({
   }
   const sql = `SELECT * FROM deals ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY COALESCE(published_at, first_seen) DESC LIMIT ?`;
   args.push(clamp(limit, 1, 500, 100));
-  return db().prepare(sql).all(...args) as DealRow[];
+  const rows = db().prepare(sql).all(...args) as DealRow[];
+  return rows.map((r) => ({ ...r }));
 }
