@@ -34,10 +34,21 @@ export function db(): DatabaseSync {
       comment_count INTEGER NOT NULL DEFAULT 0,
       voucher_code  TEXT,
       first_seen    INTEGER NOT NULL,
-      last_seen     INTEGER NOT NULL
+      last_seen     INTEGER NOT NULL,
+      is_price_error INTEGER NOT NULL DEFAULT 0,
+      is_lowest     INTEGER NOT NULL DEFAULT 0,
+      brand         TEXT
     );
     CREATE INDEX IF NOT EXISTS deals_published ON deals(published_at DESC);
     CREATE INDEX IF NOT EXISTS deals_asin ON deals(asin);
+    CREATE TABLE IF NOT EXISTS price_history (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin        TEXT NOT NULL,
+      price       REAL NOT NULL,
+      old_price   REAL,
+      recorded_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ph_asin_time ON price_history(asin, recorded_at DESC);
     CREATE TABLE IF NOT EXISTS crawl_runs (
       id       INTEGER PRIMARY KEY AUTOINCREMENT,
       at       INTEGER NOT NULL,
@@ -53,7 +64,7 @@ export function db(): DatabaseSync {
     );
   `);
 
-  // Safe migration for existing databases created before multi-source support
+  // Safe migration for existing databases created before multi-source & price-history support
   const cols = new Set(
     (d.prepare("PRAGMA table_info(deals)").all() as { name: string }[]).map((c) => c.name),
   );
@@ -63,13 +74,51 @@ export function db(): DatabaseSync {
   if (!cols.has("source_url")) {
     d.exec("ALTER TABLE deals ADD COLUMN source_url TEXT");
   }
+  if (!cols.has("is_price_error")) {
+    d.exec("ALTER TABLE deals ADD COLUMN is_price_error INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!cols.has("is_lowest")) {
+    d.exec("ALTER TABLE deals ADD COLUMN is_lowest INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!cols.has("brand")) {
+    d.exec("ALTER TABLE deals ADD COLUMN brand TEXT");
+  }
   d.exec("CREATE INDEX IF NOT EXISTS deals_source ON deals(source)");
+  d.exec("CREATE INDEX IF NOT EXISTS deals_price_error ON deals(is_price_error, published_at DESC)");
 
   g.__dealsDb = d;
   return d;
 }
 
-export type DealSource = "mydealz" | "meindeal";
+export type DealSource =
+  | "mydealz"
+  | "meindeal"
+  | "monsterdealz"
+  | "dealdoktor"
+  | "camel"
+  | "paapi"
+  | "keepa";
+
+export const ALL_SOURCES: readonly DealSource[] = [
+  "mydealz",
+  "meindeal",
+  "monsterdealz",
+  "dealdoktor",
+  "camel",
+  "paapi",
+  "keepa",
+];
+
+export const PUBLIC_SOURCES: readonly DealSource[] = [
+  "mydealz",
+  "meindeal",
+  "monsterdealz",
+  "dealdoktor",
+  "camel",
+];
+
+const ALL_SOURCE_SET = new Set<string>(ALL_SOURCES);
+const DEFAULT_PAAPI_KEYWORDS = "WMF,Zwilling,Bosch,Braun,Philips,Kärcher,LEGO,Anker,De'Longhi,Ninja,Eucerin,Pampers";
 
 export type AppSettings = {
   retentionDays: number;
@@ -79,6 +128,27 @@ export type AppSettings = {
   amazonTag: string;
   enableMydealz: boolean;
   enableMeindeal: boolean;
+  enableMonsterdealz: boolean;
+  enableDealdoktor: boolean;
+  enableCamel: boolean;
+  enablePaapiSearch: boolean;
+  enableKeepa: boolean;
+  paapiAccessKey: string;
+  paapiSecretKey: string;
+  paapiKeywords: string;
+  paapiMinSavingPct: number;
+  keepaApiKey: string;
+  keepaMinDropPct: number;
+};
+
+export type PublicAppSettings = AppSettings & {
+  hasPaapiSecret: boolean;
+  hasKeepaKey: boolean;
+};
+
+export type SettingsUpdatePatch = Partial<AppSettings> & {
+  clearPaapiSecret?: boolean;
+  clearKeepaKey?: boolean;
 };
 
 const clamp = (v: number, min: number, max: number, fallback: number) =>
@@ -94,6 +164,17 @@ function envDefaults(): AppSettings {
     amazonTag: (process.env.AMAZON_TAG || "").trim(),
     enableMydealz: true,
     enableMeindeal: true,
+    enableMonsterdealz: true,
+    enableDealdoktor: true,
+    enableCamel: true,
+    enablePaapiSearch: Boolean(process.env.PAAPI_ACCESS_KEY && process.env.PAAPI_SECRET_KEY),
+    enableKeepa: Boolean(process.env.KEEPA_API_KEY),
+    paapiAccessKey: (process.env.PAAPI_ACCESS_KEY || "").trim(),
+    paapiSecretKey: (process.env.PAAPI_SECRET_KEY || "").trim(),
+    paapiKeywords: (process.env.PAAPI_KEYWORDS || DEFAULT_PAAPI_KEYWORDS).trim(),
+    paapiMinSavingPct: clamp(Number(process.env.PAAPI_MIN_SAVING_PCT || 30), 10, 90, 30),
+    keepaApiKey: (process.env.KEEPA_API_KEY || "").trim(),
+    keepaMinDropPct: clamp(Number(process.env.KEEPA_MIN_DROP_PCT || 40), 10, 95, 40),
   };
 }
 
@@ -111,18 +192,61 @@ export function getSettings(): AppSettings {
     amazonTag: map.has("amazon_tag") ? String(map.get("amazon_tag") ?? "").trim() : defs.amazonTag,
     enableMydealz: map.has("enable_mydealz") ? map.get("enable_mydealz") === "1" : defs.enableMydealz,
     enableMeindeal: map.has("enable_meindeal") ? map.get("enable_meindeal") === "1" : defs.enableMeindeal,
+    enableMonsterdealz: map.has("enable_monsterdealz") ? map.get("enable_monsterdealz") === "1" : defs.enableMonsterdealz,
+    enableDealdoktor: map.has("enable_dealdoktor") ? map.get("enable_dealdoktor") === "1" : defs.enableDealdoktor,
+    enableCamel: map.has("enable_camel") ? map.get("enable_camel") === "1" : defs.enableCamel,
+    enablePaapiSearch: map.has("enable_paapi_search") ? map.get("enable_paapi_search") === "1" : defs.enablePaapiSearch,
+    enableKeepa: map.has("enable_keepa") ? map.get("enable_keepa") === "1" : defs.enableKeepa,
+    paapiAccessKey: map.has("paapi_access_key") ? String(map.get("paapi_access_key") ?? "").trim() : defs.paapiAccessKey,
+    paapiSecretKey: map.has("paapi_secret_key") ? String(map.get("paapi_secret_key") ?? "").trim() : defs.paapiSecretKey,
+    paapiKeywords: map.has("paapi_keywords") ? String(map.get("paapi_keywords") ?? "").trim() : defs.paapiKeywords,
+    paapiMinSavingPct: map.has("paapi_min_saving_pct")
+      ? clamp(Number(map.get("paapi_min_saving_pct")), 10, 90, defs.paapiMinSavingPct)
+      : defs.paapiMinSavingPct,
+    keepaApiKey: map.has("keepa_api_key") ? String(map.get("keepa_api_key") ?? "").trim() : defs.keepaApiKey,
+    keepaMinDropPct: map.has("keepa_min_drop_pct")
+      ? clamp(Number(map.get("keepa_min_drop_pct")), 10, 95, defs.keepaMinDropPct)
+      : defs.keepaMinDropPct,
   };
 }
 
-export function getEnabledSources(s: AppSettings = getSettings()): DealSource[] {
+export function sanitizeSettingsForClient(s: AppSettings): PublicAppSettings {
+  return {
+    ...s,
+    paapiSecretKey: "",
+    keepaApiKey: "",
+    hasPaapiSecret: Boolean(s.paapiSecretKey),
+    hasKeepaKey: Boolean(s.keepaApiKey),
+  };
+}
+
+export function getEnabledSources(s: AppSettings = getSettings(), { includeSecretSources = true } = {}): DealSource[] {
   const out: DealSource[] = [];
   if (s.enableMydealz) out.push("mydealz");
   if (s.enableMeindeal) out.push("meindeal");
+  if (s.enableMonsterdealz) out.push("monsterdealz");
+  if (s.enableDealdoktor) out.push("dealdoktor");
+  if (s.enableCamel) out.push("camel");
+  if (includeSecretSources) {
+    if (s.enablePaapiSearch && s.paapiAccessKey && s.paapiSecretKey && s.amazonTag) out.push("paapi");
+    if (s.enableKeepa && s.keepaApiKey) out.push("keepa");
+  }
   return out;
 }
 
-export function updateSettings(patch: Partial<AppSettings>): AppSettings {
+export function updateSettings(patch: SettingsUpdatePatch): AppSettings {
   const cur = getSettings();
+  const nextPaapiSecret = patch.clearPaapiSecret
+    ? ""
+    : typeof patch.paapiSecretKey === "string" && patch.paapiSecretKey.trim()
+      ? patch.paapiSecretKey.trim().slice(0, 200)
+      : cur.paapiSecretKey;
+  const nextKeepaKey = patch.clearKeepaKey
+    ? ""
+    : typeof patch.keepaApiKey === "string" && patch.keepaApiKey.trim()
+      ? patch.keepaApiKey.trim().slice(0, 200)
+      : cur.keepaApiKey;
+
   const next: AppSettings = {
     retentionDays: patch.retentionDays !== undefined ? clamp(Number(patch.retentionDays), 1, 90, cur.retentionDays) : cur.retentionDays,
     crawlPages: patch.crawlPages !== undefined ? clamp(Number(patch.crawlPages), 1, 20, cur.crawlPages) : cur.crawlPages,
@@ -132,6 +256,19 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
     amazonTag: patch.amazonTag !== undefined ? String(patch.amazonTag).trim().slice(0, 100) : cur.amazonTag,
     enableMydealz: patch.enableMydealz !== undefined ? Boolean(patch.enableMydealz) : cur.enableMydealz,
     enableMeindeal: patch.enableMeindeal !== undefined ? Boolean(patch.enableMeindeal) : cur.enableMeindeal,
+    enableMonsterdealz: patch.enableMonsterdealz !== undefined ? Boolean(patch.enableMonsterdealz) : cur.enableMonsterdealz,
+    enableDealdoktor: patch.enableDealdoktor !== undefined ? Boolean(patch.enableDealdoktor) : cur.enableDealdoktor,
+    enableCamel: patch.enableCamel !== undefined ? Boolean(patch.enableCamel) : cur.enableCamel,
+    enablePaapiSearch: patch.enablePaapiSearch !== undefined ? Boolean(patch.enablePaapiSearch) : cur.enablePaapiSearch,
+    enableKeepa: patch.enableKeepa !== undefined ? Boolean(patch.enableKeepa) : cur.enableKeepa,
+    paapiAccessKey: patch.paapiAccessKey !== undefined ? String(patch.paapiAccessKey).trim().slice(0, 200) : cur.paapiAccessKey,
+    paapiSecretKey: nextPaapiSecret,
+    paapiKeywords: patch.paapiKeywords !== undefined ? String(patch.paapiKeywords).trim().slice(0, 1000) : cur.paapiKeywords,
+    paapiMinSavingPct:
+      patch.paapiMinSavingPct !== undefined ? clamp(Number(patch.paapiMinSavingPct), 10, 90, cur.paapiMinSavingPct) : cur.paapiMinSavingPct,
+    keepaApiKey: nextKeepaKey,
+    keepaMinDropPct:
+      patch.keepaMinDropPct !== undefined ? clamp(Number(patch.keepaMinDropPct), 10, 95, cur.keepaMinDropPct) : cur.keepaMinDropPct,
   };
   const d = db();
   const stmt = d.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
@@ -144,6 +281,17 @@ export function updateSettings(patch: Partial<AppSettings>): AppSettings {
     stmt.run("amazon_tag", next.amazonTag);
     stmt.run("enable_mydealz", next.enableMydealz ? "1" : "0");
     stmt.run("enable_meindeal", next.enableMeindeal ? "1" : "0");
+    stmt.run("enable_monsterdealz", next.enableMonsterdealz ? "1" : "0");
+    stmt.run("enable_dealdoktor", next.enableDealdoktor ? "1" : "0");
+    stmt.run("enable_camel", next.enableCamel ? "1" : "0");
+    stmt.run("enable_paapi_search", next.enablePaapiSearch ? "1" : "0");
+    stmt.run("enable_keepa", next.enableKeepa ? "1" : "0");
+    stmt.run("paapi_access_key", next.paapiAccessKey);
+    stmt.run("paapi_secret_key", next.paapiSecretKey);
+    stmt.run("paapi_keywords", next.paapiKeywords);
+    stmt.run("paapi_min_saving_pct", String(next.paapiMinSavingPct));
+    stmt.run("keepa_api_key", next.keepaApiKey);
+    stmt.run("keepa_min_drop_pct", String(next.keepaMinDropPct));
     d.exec("COMMIT");
   } catch (e) {
     d.exec("ROLLBACK");
@@ -172,6 +320,9 @@ export type DealIn = {
   noAsin?: boolean;
   amzTitle?: string | null;
   amzImage?: string | null;
+  isPriceError?: boolean | number;
+  isLowest?: boolean | number;
+  brand?: string | null;
 };
 
 export type DealRow = {
@@ -195,6 +346,9 @@ export type DealRow = {
   voucher_code: string | null;
   first_seen: number;
   last_seen: number;
+  is_price_error: number;
+  is_lowest: number;
+  brand: string | null;
 };
 
 export type CrawlRunRow = {
@@ -207,6 +361,8 @@ export type CrawlRunRow = {
   message: string | null;
 };
 
+export type CrawlRunSummary = CrawlRunRow;
+
 const n = <T extends string | number>(v: T | null | undefined): T | null => (v === undefined ? null : v);
 
 export function upsertDeals(deals: DealIn[]): { count: number; added: number; skippedOld: number } {
@@ -214,12 +370,22 @@ export function upsertDeals(deals: DealIn[]): { count: number; added: number; sk
   const now = Math.floor(Date.now() / 1000);
   const { retentionDays } = getSettings();
   const cutoff = now - retentionDays * 86400;
+  const phCutoff = now - 90 * 86400;
 
   const exists = d.prepare("SELECT 1 FROM deals WHERE thread_id = ?");
+  const phStatsStmt = d.prepare(
+    "SELECT COUNT(*) AS cnt, AVG(price) AS avg_p, MIN(price) AS min_p FROM price_history WHERE asin = ? AND recorded_at >= ?",
+  );
+  const phLatestStmt = d.prepare(
+    "SELECT price, recorded_at FROM price_history WHERE asin = ? ORDER BY recorded_at DESC LIMIT 1",
+  );
+  const phInsertStmt = d.prepare("INSERT INTO price_history (asin, price, old_price, recorded_at) VALUES (?,?,?,?)");
+
   const stmt = d.prepare(`
     INSERT INTO deals (thread_id, source, source_url, asin, no_asin, amz_title, amz_image, md_title, md_image, slug, price, old_price,
-      percentage, temperature, published_at, hot_date, is_expired, comment_count, voucher_code, first_seen, last_seen)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      percentage, temperature, published_at, hot_date, is_expired, comment_count, voucher_code, first_seen, last_seen,
+      is_price_error, is_lowest, brand)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT(thread_id) DO UPDATE SET
       source = excluded.source,
       source_url = COALESCE(excluded.source_url, deals.source_url),
@@ -228,10 +394,17 @@ export function upsertDeals(deals: DealIn[]): { count: number; added: number; sk
       amz_title = COALESCE(excluded.amz_title, deals.amz_title),
       amz_image = COALESCE(excluded.amz_image, deals.amz_image),
       md_title = excluded.md_title, md_image = COALESCE(excluded.md_image, deals.md_image), slug = excluded.slug,
-      price = excluded.price, old_price = excluded.old_price, percentage = excluded.percentage,
-      temperature = excluded.temperature, published_at = excluded.published_at, hot_date = excluded.hot_date,
-      is_expired = excluded.is_expired, comment_count = excluded.comment_count,
-      voucher_code = excluded.voucher_code, last_seen = excluded.last_seen
+      price = COALESCE(excluded.price, deals.price),
+      old_price = COALESCE(excluded.old_price, deals.old_price),
+      percentage = COALESCE(excluded.percentage, deals.percentage),
+      temperature = MAX(deals.temperature, excluded.temperature),
+      published_at = COALESCE(excluded.published_at, deals.published_at),
+      hot_date = COALESCE(excluded.hot_date, deals.hot_date),
+      is_expired = excluded.is_expired, comment_count = MAX(deals.comment_count, excluded.comment_count),
+      voucher_code = COALESCE(excluded.voucher_code, deals.voucher_code), last_seen = excluded.last_seen,
+      is_price_error = MAX(deals.is_price_error, excluded.is_price_error),
+      is_lowest = MAX(deals.is_lowest, excluded.is_lowest),
+      brand = COALESCE(excluded.brand, deals.brand)
   `);
   let count = 0;
   let added = 0;
@@ -245,11 +418,46 @@ export function upsertDeals(deals: DealIn[]): { count: number; added: number; sk
         continue;
       }
       if (!exists.get(x.threadId)) added++;
-      const src = x.source === "meindeal" ? "meindeal" : "mydealz";
+      const src: DealSource = x.source && ALL_SOURCE_SET.has(x.source) ? (x.source as DealSource) : "mydealz";
+
+      let price = typeof x.price === "number" && Number.isFinite(x.price) ? x.price : null;
+      let oldPrice = typeof x.oldPrice === "number" && Number.isFinite(x.oldPrice) && x.oldPrice > 0 ? x.oldPrice : null;
+      let pct =
+        typeof x.percentage === "number" && Number.isFinite(x.percentage)
+          ? Math.round(x.percentage)
+          : price != null && oldPrice != null && oldPrice > price
+            ? Math.round(100 * (1 - price / oldPrice))
+            : null;
+      let isPriceError = Boolean(x.isPriceError) || (pct != null && pct >= 55);
+      let isLowest = Boolean(x.isLowest);
+
+      const cleanAsin = x.asin ? String(x.asin).trim().toUpperCase() : null;
+      if (cleanAsin && price != null && price > 0) {
+        const stats = phStatsStmt.get(cleanAsin, phCutoff) as
+          | { cnt: number; avg_p: number | null; min_p: number | null }
+          | undefined;
+        const cnt = Number(stats?.cnt ?? 0);
+        const avgP = stats?.avg_p != null ? Number(stats.avg_p) : null;
+        const minP = stats?.min_p != null ? Number(stats.min_p) : null;
+
+        if (cnt >= 2 && avgP != null && price <= avgP * 0.5) isPriceError = true;
+        if (cnt >= 2 && minP != null && price < minP) isLowest = true;
+        if (oldPrice == null && cnt >= 2 && avgP != null && avgP > price * 1.05) {
+          oldPrice = Math.round(avgP * 100) / 100;
+          pct = Math.round(100 * (1 - price / oldPrice));
+        }
+
+        const latest = phLatestStmt.get(cleanAsin) as { price: number; recorded_at: number } | undefined;
+        if (!latest || Math.abs(Number(latest.price) - price) >= 0.01 || now - Number(latest.recorded_at) >= 6 * 3600) {
+          phInsertStmt.run(cleanAsin, price, oldPrice, now);
+        }
+      }
+
       stmt.run(
-        x.threadId, src, n(x.sourceUrl), n(x.asin), x.noAsin ? 1 : 0, n(x.amzTitle), n(x.amzImage), x.mdTitle, n(x.mdImage), n(x.slug),
-        n(x.price), n(x.oldPrice), n(x.percentage), x.temperature ?? 0, n(x.publishedAt), n(x.hotDate),
+        x.threadId, src, n(x.sourceUrl), cleanAsin, x.noAsin ? 1 : 0, n(x.amzTitle), n(x.amzImage), x.mdTitle, n(x.mdImage), n(x.slug),
+        price, oldPrice, pct, x.temperature ?? 0, n(x.publishedAt), n(x.hotDate),
         x.isExpired ? 1 : 0, x.commentCount ?? 0, n(x.voucherCode), now, now,
+        isPriceError ? 1 : 0, isLowest ? 1 : 0, n(x.brand),
       );
       count++;
     }
@@ -261,11 +469,132 @@ export function upsertDeals(deals: DealIn[]): { count: number; added: number; sk
   return { count, added, skippedOld };
 }
 
+export type ActiveAsinDeal = {
+  thread_id: number;
+  asin: string;
+  price: number | null;
+  old_price: number | null;
+  amz_title: string | null;
+  amz_image: string | null;
+};
+
+export function listActiveDealsWithAsin(limit = 200): ActiveAsinDeal[] {
+  return db()
+    .prepare(
+      `SELECT thread_id, asin, price, old_price, amz_title, amz_image
+       FROM deals
+       WHERE is_expired = 0 AND asin IS NOT NULL AND asin <> ''
+       ORDER BY last_seen ASC
+       LIMIT ?`,
+    )
+    .all(clamp(limit, 1, 500, 200)) as ActiveAsinDeal[];
+}
+
+export type PriceCheckUpdate = {
+  threadId: number;
+  asin: string;
+  price: number | null;
+  oldPrice: number | null;
+  percentage: number | null;
+  inStock: boolean;
+  title?: string | null;
+  image?: string | null;
+  brand?: string | null;
+};
+
+export function applyPriceChecks(updates: PriceCheckUpdate[]): { checked: number; updated: number; expired: number } {
+  const d = db();
+  const now = Math.floor(Date.now() / 1000);
+  const phCutoff = now - 90 * 86400;
+  const curStmt = d.prepare("SELECT price, old_price, is_price_error, is_lowest FROM deals WHERE thread_id = ?");
+  const phStatsStmt = d.prepare(
+    "SELECT COUNT(*) AS cnt, AVG(price) AS avg_p, MIN(price) AS min_p FROM price_history WHERE asin = ? AND recorded_at >= ?",
+  );
+  const phLatestStmt = d.prepare(
+    "SELECT price, recorded_at FROM price_history WHERE asin = ? ORDER BY recorded_at DESC LIMIT 1",
+  );
+  const phInsertStmt = d.prepare("INSERT INTO price_history (asin, price, old_price, recorded_at) VALUES (?,?,?,?)");
+  const updStmt = d.prepare(`
+    UPDATE deals SET
+      price = COALESCE(?, price),
+      old_price = COALESCE(?, old_price),
+      percentage = COALESCE(?, percentage),
+      amz_title = COALESCE(?, amz_title),
+      amz_image = COALESCE(?, amz_image),
+      brand = COALESCE(?, brand),
+      is_expired = ?,
+      is_price_error = MAX(is_price_error, ?),
+      is_lowest = MAX(is_lowest, ?),
+      last_seen = ?
+    WHERE thread_id = ?
+  `);
+
+  let checked = 0;
+  let updated = 0;
+  let expired = 0;
+  d.exec("BEGIN");
+  try {
+    for (const u of updates) {
+      checked++;
+      const cur = curStmt.get(u.threadId) as
+        | { price: number | null; old_price: number | null; is_price_error: number; is_lowest: number }
+        | undefined;
+      if (!cur) continue;
+
+      const prevPrice = cur.price != null ? Number(cur.price) : null;
+      const priceIncreasedTooMuch = prevPrice != null && prevPrice > 0 && u.price != null && u.price > prevPrice * 1.15;
+      const shouldExpire = !u.inStock || priceIncreasedTooMuch;
+      if (shouldExpire) expired++;
+
+      let isPriceError = u.percentage != null && u.percentage >= 55;
+      let isLowest = false;
+      if (u.price != null && u.price > 0) {
+        const stats = phStatsStmt.get(u.asin, phCutoff) as
+          | { cnt: number; avg_p: number | null; min_p: number | null }
+          | undefined;
+        const cnt = Number(stats?.cnt ?? 0);
+        const avgP = stats?.avg_p != null ? Number(stats.avg_p) : null;
+        const minP = stats?.min_p != null ? Number(stats.min_p) : null;
+        if (cnt >= 2 && avgP != null && u.price <= avgP * 0.5) isPriceError = true;
+        if (cnt >= 2 && minP != null && u.price < minP) isLowest = true;
+
+        const latest = phLatestStmt.get(u.asin) as { price: number; recorded_at: number } | undefined;
+        if (!latest || Math.abs(Number(latest.price) - u.price) >= 0.01 || now - Number(latest.recorded_at) >= 6 * 3600) {
+          phInsertStmt.run(u.asin, u.price, u.oldPrice, now);
+        }
+      }
+
+      const res = updStmt.run(
+        n(u.price),
+        n(u.oldPrice),
+        n(u.percentage),
+        n(u.title),
+        n(u.image),
+        n(u.brand),
+        shouldExpire ? 1 : 0,
+        isPriceError ? 1 : 0,
+        isLowest ? 1 : 0,
+        now,
+        u.threadId,
+      );
+      if (Number(res.changes) > 0) updated++;
+    }
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
+  return { checked, updated, expired };
+}
+
 /** Delete deals older than retentionDays (based on published_at, falling back to first_seen). */
 export function pruneOldDeals(retentionDays?: number): number {
+  const d = db();
+  const now = Math.floor(Date.now() / 1000);
   const days = retentionDays ?? getSettings().retentionDays;
-  const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
-  const res = db().prepare("DELETE FROM deals WHERE COALESCE(published_at, first_seen) < ?").run(cutoff);
+  const cutoff = now - days * 86400;
+  const res = d.prepare("DELETE FROM deals WHERE COALESCE(published_at, first_seen) < ?").run(cutoff);
+  d.prepare("DELETE FROM price_history WHERE recorded_at < ?").run(now - 90 * 86400);
   return Number(res.changes);
 }
 
@@ -323,11 +652,13 @@ export type AdminStats = {
   withAsin: number;
   noAsin: number;
   withAmzTitle: number;
+  priceErrors: number;
+  trackedAsins: number;
   olderThanRetention: number;
   oldestAt: number | null;
   newestAt: number | null;
   dbSizeBytes: number;
-  bySource: { mydealz: number; meindeal: number };
+  bySource: Record<DealSource, number>;
   lastOk: { at: number; source: string } | null;
   lastRun: CrawlRunRow | null;
 };
@@ -345,15 +676,24 @@ export function getAdminStats(): AdminStats {
         SUM(CASE WHEN asin IS NOT NULL THEN 1 ELSE 0 END) AS with_asin,
         SUM(CASE WHEN no_asin = 1 THEN 1 ELSE 0 END) AS no_asin,
         SUM(CASE WHEN amz_title IS NOT NULL THEN 1 ELSE 0 END) AS with_amz_title,
+        SUM(CASE WHEN is_price_error = 1 THEN 1 ELSE 0 END) AS price_errors,
         SUM(CASE WHEN COALESCE(published_at, first_seen) < ? THEN 1 ELSE 0 END) AS older_than_retention,
         SUM(CASE WHEN source = 'mydealz' THEN 1 ELSE 0 END) AS src_mydealz,
         SUM(CASE WHEN source = 'meindeal' THEN 1 ELSE 0 END) AS src_meindeal,
+        SUM(CASE WHEN source = 'monsterdealz' THEN 1 ELSE 0 END) AS src_monsterdealz,
+        SUM(CASE WHEN source = 'dealdoktor' THEN 1 ELSE 0 END) AS src_dealdoktor,
+        SUM(CASE WHEN source = 'camel' THEN 1 ELSE 0 END) AS src_camel,
+        SUM(CASE WHEN source = 'paapi' THEN 1 ELSE 0 END) AS src_paapi,
+        SUM(CASE WHEN source = 'keepa' THEN 1 ELSE 0 END) AS src_keepa,
         MIN(COALESCE(published_at, first_seen)) AS oldest_at,
         MAX(COALESCE(published_at, first_seen)) AS newest_at
       FROM deals`,
     )
     .get(cutoff) as Record<string, number | null>;
 
+  const trackedAsins = Number(
+    (d.prepare("SELECT COUNT(DISTINCT asin) AS c FROM price_history").get() as { c?: number } | undefined)?.c ?? 0,
+  );
   const pageCount = (d.prepare("PRAGMA page_count").get() as { page_count?: number } | undefined)?.page_count ?? 0;
   const pageSize = (d.prepare("PRAGMA page_size").get() as { page_size?: number } | undefined)?.page_size ?? 0;
   const dbSizeBytes = Number(pageCount) * Number(pageSize);
@@ -372,6 +712,8 @@ export function getAdminStats(): AdminStats {
     withAsin: Number(row.with_asin ?? 0),
     noAsin: Number(row.no_asin ?? 0),
     withAmzTitle: Number(row.with_amz_title ?? 0),
+    priceErrors: Number(row.price_errors ?? 0),
+    trackedAsins,
     olderThanRetention: Number(row.older_than_retention ?? 0),
     oldestAt: row.oldest_at ?? null,
     newestAt: row.newest_at ?? null,
@@ -379,6 +721,11 @@ export function getAdminStats(): AdminStats {
     bySource: {
       mydealz: Number(row.src_mydealz ?? 0),
       meindeal: Number(row.src_meindeal ?? 0),
+      monsterdealz: Number(row.src_monsterdealz ?? 0),
+      dealdoktor: Number(row.src_dealdoktor ?? 0),
+      camel: Number(row.src_camel ?? 0),
+      paapi: Number(row.src_paapi ?? 0),
+      keepa: Number(row.src_keepa ?? 0),
     },
     lastOk: lastOkRow ? { at: Number(lastOkRow.at), source: String(lastOkRow.source) } : null,
     lastRun: lastRunRow ? { ...lastRunRow } : null,
@@ -408,12 +755,13 @@ export function listDealsAdmin({
   if (filter === "active") where.push("is_expired = 0");
   else if (filter === "expired") where.push("is_expired = 1");
   else if (filter === "no_asin") where.push("asin IS NULL");
-  if (source === "mydealz" || source === "meindeal") {
+  else if (filter === "price_error") where.push("is_price_error = 1");
+  if (ALL_SOURCE_SET.has(source)) {
     where.push("source = ?");
     args.push(source);
   }
   if (q.trim()) {
-    where.push("(COALESCE(amz_title,'') || ' ' || md_title || ' ' || COALESCE(asin,'') || ' ' || CAST(thread_id AS TEXT)) LIKE ?");
+    where.push("(COALESCE(amz_title,'') || ' ' || md_title || ' ' || COALESCE(asin,'') || ' ' || COALESCE(brand,'') || ' ' || CAST(thread_id AS TEXT)) LIKE ?");
     args.push(`%${q.trim()}%`);
   }
   const sql = `SELECT * FROM deals ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY COALESCE(published_at, first_seen) DESC LIMIT ?`;

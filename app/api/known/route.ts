@@ -9,7 +9,7 @@ export function GET() {
     settings: {
       retentionDays: s.retentionDays,
       crawlPages: s.crawlPages,
-      sources: getEnabledSources(s),
+      sources: getEnabledSources(s, { includeSecretSources: false }),
     },
   });
 }

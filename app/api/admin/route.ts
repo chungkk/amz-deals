@@ -1,5 +1,5 @@
-import { getAdminStats, getRecentRuns, getSettings, listDealsAdmin } from "@/lib/db";
-import { isCrawlRunning } from "@/lib/scheduler";
+import { getAdminStats, getRecentRuns, getSettings, listDealsAdmin, sanitizeSettingsForClient } from "@/lib/db";
+import { getCrawlProgress, isCrawlRunning } from "@/lib/scheduler";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +12,10 @@ export function GET(req: Request) {
 
   return Response.json({
     stats: getAdminStats(),
-    settings: getSettings(),
+    settings: sanitizeSettingsForClient(getSettings()),
     runs: getRecentRuns(30),
     deals: listDealsAdmin({ q, filter, source, limit }),
     crawling: isCrawlRunning(),
+    crawlProgress: getCrawlProgress(),
   });
 }

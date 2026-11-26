@@ -1,15 +1,31 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import type { AdminStats, AppSettings, CrawlRunRow, DealRow } from "@/lib/db";
+import type { AdminStats, CrawlRunRow, DealRow, PublicAppSettings } from "@/lib/db";
 import { CopyAffButtons } from "../CopyAffButton";
 
 type AdminPayload = {
   stats: AdminStats;
-  settings: AppSettings;
+  settings: PublicAppSettings;
   runs: CrawlRunRow[];
   deals: DealRow[];
   crawling: boolean;
+  crawlProgress?: string;
+};
+
+type SettingsForm = PublicAppSettings & {
+  clearPaapiSecret?: boolean;
+  clearKeepaKey?: boolean;
+};
+
+const SOURCE_LABELS: Record<string, string> = {
+  mydealz: "mydealz",
+  meindeal: "mein-deal",
+  monsterdealz: "monsterdealz",
+  dealdoktor: "dealdoktor",
+  camel: "camel",
+  paapi: "PA-API",
+  keepa: "Keepa",
 };
 
 const eur = (v: number | null) =>
@@ -44,12 +60,14 @@ function fmtBytes(bytes: number) {
 function dealSourceUrl(d: DealRow) {
   if (d.source_url) return d.source_url;
   if (d.source === "meindeal") return `https://www.mein-deal.com/?p=${Math.abs(d.thread_id)}`;
+  if (d.source === "camel" && d.asin) return `https://de.camelcamelcamel.com/product/${d.asin}`;
+  if (d.asin && (d.source === "paapi" || d.source === "keepa")) return `https://www.amazon.de/dp/${d.asin}`;
   return `https://www.mydealz.de/deals/${d.slug ? d.slug + "-" : ""}${d.thread_id}`;
 }
 
 export default function AdminClient({ initial }: { initial: AdminPayload }) {
   const [data, setData] = useState<AdminPayload>(initial);
-  const [form, setForm] = useState<AppSettings>(initial.settings);
+  const [form, setForm] = useState<SettingsForm>(initial.settings);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -159,7 +177,11 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
     void refresh({ q, filter, source: sourceFilter });
   }
 
-  const { stats, runs, deals, settings, crawling } = data;
+  const { stats, runs, deals, settings, crawling, crawlProgress } = data;
+  const sourceBreakdown = Object.entries(stats.bySource)
+    .filter(([, count]) => count > 0)
+    .map(([k, count]) => `${SOURCE_LABELS[k] || k}: ${count}`)
+    .join(" · ");
 
   return (
     <main className="admin-page">
@@ -241,21 +263,19 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
         <div className="kpi">
           <div className="kpi-label">Tổng deal trong kho</div>
           <div className="kpi-val">{stats.total}</div>
-          <div className="kpi-sub">
-            mydealz: {stats.bySource.mydealz} · mein-deal: {stats.bySource.meindeal}
-          </div>
+          <div className="kpi-sub">{sourceBreakdown || "Chưa có deal"}</div>
         </div>
         <div className="kpi">
-          <div className="kpi-label">Trạng thái &amp; Amazon</div>
+          <div className="kpi-label">Trạng thái &amp; Lỗi giá</div>
           <div className="kpi-val">{stats.withAsin} ASIN</div>
           <div className="kpi-sub">
-            Còn hạn: {stats.active} · Hết hạn: {stats.expired} · Thiếu ASIN: {stats.noAsin}
+            Còn hạn: {stats.active} · Hết hạn: {stats.expired} · ⚡ Lỗi giá: {stats.priceErrors}
           </div>
         </div>
         <div className="kpi">
-          <div className="kpi-label">Quá hạn giữ (&gt; {settings.retentionDays} ngày)</div>
-          <div className="kpi-val">{stats.olderThanRetention}</div>
-          <div className="kpi-sub">Cũ nhất: {fmtTime(stats.oldestAt)}</div>
+          <div className="kpi-label">Keepa Mini (Lịch sử giá)</div>
+          <div className="kpi-val">{stats.trackedAsins} ASIN</div>
+          <div className="kpi-sub">Quá hạn giữ (&gt; {settings.retentionDays}d): {stats.olderThanRetention}</div>
         </div>
         <div className="kpi">
           <div className="kpi-label">Cập nhật thành công gần nhất</div>
@@ -273,7 +293,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
 
       <section className="admin-two-col">
         <form className="panel" onSubmit={saveSettings}>
-          <h2>Cấu hình tự động &amp; Lưu trữ</h2>
+          <h2>Cấu hình nguồn Deal &amp; Affiliate</h2>
           <div className="field-grid">
             <label className="field">
               <span>Số ngày giữ dữ liệu (tự xoá sau N ngày)</span>
@@ -306,10 +326,10 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               />
             </label>
             <label className="field">
-              <span>Amazon Affiliate Tag (tuỳ chọn)</span>
+              <span>Amazon PartnerNet DE Tag</span>
               <input
                 type="text"
-                placeholder="vd: mytag-21"
+                placeholder="vd: tenban-21"
                 value={form.amazonTag}
                 onChange={(e) => setForm({ ...form, amazonTag: e.target.value })}
               />
@@ -322,7 +342,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                 checked={form.enableMydealz}
                 onChange={(e) => setForm({ ...form, enableMydealz: e.target.checked })}
               />
-              Lấy deal Amazon từ <strong>mydealz.de</strong>
+              Lấy deal Amazon + Preisfehler từ <strong>mydealz.de</strong>
             </label>
             <label className="chk">
               <input
@@ -335,18 +355,156 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
             <label className="chk">
               <input
                 type="checkbox"
+                checked={form.enableMonsterdealz}
+                onChange={(e) => setForm({ ...form, enableMonsterdealz: e.target.checked })}
+              />
+              Lấy deal Amazon từ <strong>monsterdealz.de</strong>
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.enableDealdoktor}
+                onChange={(e) => setForm({ ...form, enableDealdoktor: e.target.checked })}
+              />
+              Lấy deal Amazon từ <strong>dealdoktor.de</strong>
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.enableCamel}
+                onChange={(e) => setForm({ ...form, enableCamel: e.target.checked })}
+              />
+              Lấy Top Price Drops từ <strong>de.camelcamelcamel.com</strong> (RSS miễn phí)
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
                 checked={form.serverCrawlEnabled}
                 onChange={(e) => setForm({ ...form, serverCrawlEnabled: e.target.checked })}
               />
               Bật auto crawl ngay trên server (đi qua Cloudflare WARP proxy <code>warp:1080</code>)
             </label>
           </div>
+
+          <div className="sub-section">
+            <h3>Amazon PartnerNet DE — PA-API 5.0 (Miễn phí, cần đủ 3 đơn đầu)</h3>
+            <div className="sub-hint">
+              Khi có Access Key + Secret Key + Tag, crawler tự lấy ảnh/giá chính chủ và kiểm tra hết hạn qua API (không bị captcha).
+            </div>
+            <div className="field-grid">
+              <label className="field">
+                <span>PA-API Access Key</span>
+                <input
+                  type="text"
+                  placeholder="AKIA..."
+                  value={form.paapiAccessKey}
+                  onChange={(e) => setForm({ ...form, paapiAccessKey: e.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>PA-API Secret Key</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={form.hasPaapiSecret && !form.clearPaapiSecret ? "Đã lưu (để trống nếu giữ nguyên)" : "Nhập Secret Key"}
+                  value={form.paapiSecretKey}
+                  onChange={(e) => setForm({ ...form, paapiSecretKey: e.target.value, clearPaapiSecret: false })}
+                />
+              </label>
+              <label className="field">
+                <span>Từ khoá / Brand săn qua PA-API</span>
+                <input
+                  type="text"
+                  placeholder="WMF,Zwilling,Bosch,LEGO..."
+                  value={form.paapiKeywords}
+                  onChange={(e) => setForm({ ...form, paapiKeywords: e.target.value })}
+                />
+              </label>
+              <label className="field">
+                <span>Giảm tối thiểu PA-API (%)</span>
+                <input
+                  type="number"
+                  min={10}
+                  max={90}
+                  value={form.paapiMinSavingPct}
+                  onChange={(e) => setForm({ ...form, paapiMinSavingPct: Number(e.target.value) })}
+                />
+              </label>
+            </div>
+            <div className="chk-group">
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={form.enablePaapiSearch}
+                  onChange={(e) => setForm({ ...form, enablePaapiSearch: e.target.checked })}
+                />
+                Bật tự tìm deal theo từ khoá/brand bằng <strong>PA-API SearchItems</strong>
+              </label>
+              {form.hasPaapiSecret && (
+                <label className="chk">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(form.clearPaapiSecret)}
+                    onChange={(e) => setForm({ ...form, clearPaapiSecret: e.target.checked })}
+                  />
+                  Xoá PA-API Secret Key đang lưu
+                </label>
+              )}
+            </div>
+          </div>
+
+          <div className="sub-section">
+            <h3>Keepa API (Tuỳ chọn — gói trả phí từ ~49€/tháng)</h3>
+            <div className="field-grid">
+              <label className="field">
+                <span>Keepa API Key</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={form.hasKeepaKey && !form.clearKeepaKey ? "Đã lưu (để trống nếu giữ nguyên)" : "Để trống nếu dùng nguồn miễn phí"}
+                  value={form.keepaApiKey}
+                  onChange={(e) => setForm({ ...form, keepaApiKey: e.target.value, clearKeepaKey: false })}
+                />
+              </label>
+              <label className="field">
+                <span>Giảm tối thiểu Keepa (%)</span>
+                <input
+                  type="number"
+                  min={10}
+                  max={95}
+                  value={form.keepaMinDropPct}
+                  onChange={(e) => setForm({ ...form, keepaMinDropPct: Number(e.target.value) })}
+                />
+              </label>
+            </div>
+            <div className="chk-group">
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={form.enableKeepa}
+                  onChange={(e) => setForm({ ...form, enableKeepa: e.target.checked })}
+                />
+                Bật kéo deal từ <strong>Keepa API (/deal, amazon.de)</strong>
+              </label>
+              {form.hasKeepaKey && (
+                <label className="chk">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(form.clearKeepaKey)}
+                    onChange={(e) => setForm({ ...form, clearKeepaKey: e.target.checked })}
+                  />
+                  Xoá Keepa API Key đang lưu
+                </label>
+              )}
+            </div>
+          </div>
+
           <div className="panel-foot">
             <button className="btn btn-primary" type="submit" disabled={busy}>
               Lưu cấu hình
             </button>
             <span className="meta">
-              Áp dụng ngay cho cả server scheduler và <code>scripts/push.mjs</code>.
+              Áp dụng ngay cho server scheduler và <code>scripts/push.mjs</code>.
             </span>
           </div>
         </form>
@@ -354,6 +512,22 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
         <div className="panel">
           <h2>Thao tác nhanh</h2>
           <div className="action-list">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy || crawling}
+              onClick={() => void runAction("crawl_now")}
+            >
+              {crawling ? crawlProgress || "Đang crawl trên server…" : "Chạy crawl trên server ngay"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => void runAction("check_prices")}
+            >
+              Kiểm tra giá &amp; hết hạn (PA-API)
+            </button>
             <button
               type="button"
               className="btn"
@@ -380,14 +554,6 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
             </button>
             <button
               type="button"
-              className="btn"
-              disabled={busy || crawling}
-              onClick={() => void runAction("crawl_now")}
-            >
-              {crawling ? "Đang crawl trên server…" : "Chạy crawl trên server ngay"}
-            </button>
-            <button
-              type="button"
               className="btn btn-danger"
               disabled={busy}
               onClick={() =>
@@ -402,10 +568,15 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
             </button>
           </div>
           <div className="info-box">
-            <strong>Nguồn dữ liệu &amp; Tự động hoá:</strong>
+            <strong>Nguồn dữ liệu &amp; Keepa Mini:</strong>
             <div>
-              Server tự crawl <strong>mydealz.de</strong> + <strong>mein-deal.com</strong> (chỉ deal Amazon) qua WARP proxy mỗi{" "}
-              <code>{settings.crawlIntervalMin} phút</code>, tự xoá dữ liệu cũ sau <code>{settings.retentionDays} ngày</code>.
+              Hệ thống tự gom từ <strong>mydealz (+ Preisfehler)</strong>, <strong>mein-deal</strong>,{" "}
+              <strong>monsterdealz</strong>, <strong>dealdoktor</strong>, <strong>CamelCamelCamel DE</strong> và tự
+              lưu lịch sử giá 90 ngày trong SQLite (<code>{stats.trackedAsins}</code> ASIN) để đánh dấu{" "}
+              <strong>⚡ Lỗi giá</strong> &amp; <strong>📉 Đáy</strong> mà không cần mua Keepa.
+            </div>
+            <div>
+              Chu kỳ server: <code>{settings.crawlIntervalMin} phút</code> · Giữ deal: <code>{settings.retentionDays} ngày</code>.
             </div>
           </div>
         </div>
@@ -417,7 +588,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
           <form className="admin-search" onSubmit={handleSearch}>
             <input
               type="search"
-              placeholder="Tìm tên, ASIN, ID…"
+              placeholder="Tìm tên, brand, ASIN, ID…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
@@ -432,6 +603,11 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               <option value="all">Mọi nguồn</option>
               <option value="mydealz">mydealz</option>
               <option value="meindeal">mein-deal</option>
+              <option value="monsterdealz">monsterdealz</option>
+              <option value="dealdoktor">dealdoktor</option>
+              <option value="camel">Camel DE</option>
+              <option value="paapi">PA-API</option>
+              <option value="keepa">Keepa</option>
             </select>
             <select
               value={filter}
@@ -442,6 +618,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               }}
             >
               <option value="all">Tất cả trạng thái</option>
+              <option value="price_error">⚡ Lỗi giá / Preisfehler</option>
               <option value="active">Còn hạn</option>
               <option value="expired">Đã hết hạn</option>
               <option value="no_asin">Thiếu ASIN</option>
@@ -458,7 +635,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               <tr>
                 <th>Deal</th>
                 <th>Nguồn</th>
-                <th>ASIN</th>
+                <th>ASIN &amp; Copy bài</th>
                 <th>Giá</th>
                 <th>Đăng lúc</th>
                 <th>Trạng thái</th>
@@ -479,6 +656,12 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                   ? `https://amazon.de/dp/${d.asin}${settings.amazonTag ? `?tag=${encodeURIComponent(settings.amazonTag)}` : ""}`
                   : null;
                 const srcHref = dealSourceUrl(d);
+                const displayTitle = d.amz_title || d.md_title;
+                const pct =
+                  d.percentage ??
+                  (d.old_price && d.price != null && d.old_price > d.price
+                    ? Math.round(100 * (1 - d.price / d.old_price))
+                    : null);
                 return (
                   <tr key={d.thread_id} className={d.is_expired ? "row-expired" : ""}>
                     <td>
@@ -486,30 +669,39 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                         {img && <img className="thumb" src={img} alt="" loading="lazy" referrerPolicy="no-referrer" />}
                         <div className="deal-cell-txt">
                           <a href={amzHref || srcHref} target="_blank" rel="noopener noreferrer" className="deal-cell-title">
-                            {d.amz_title || d.md_title}
+                            {displayTitle}
                           </a>
                           <div className="meta">
                             #{Math.abs(d.thread_id)} ·{" "}
                             <a href={srcHref} target="_blank" rel="noopener noreferrer">
-                              {d.source === "meindeal" ? "mein-deal" : `mydealz (${d.temperature}°)`}
+                              {SOURCE_LABELS[d.source] || d.source}
+                              {d.source === "mydealz" ? ` (${d.temperature}°)` : ""}
                             </a>
+                            {d.brand ? ` · ${d.brand}` : ""}
                             {d.voucher_code ? ` · Code: ${d.voucher_code}` : ""}
                           </div>
                         </div>
                       </div>
                     </td>
                     <td className="nowrap">
-                      <span className={`src-badge ${d.source === "meindeal" ? "src-meindeal" : "src-mydealz"}`}>
-                        {d.source === "meindeal" ? "mein-deal" : "mydealz"}
+                      <span className={`src-badge src-${d.source}`}>
+                        {SOURCE_LABELS[d.source] || d.source}
                       </span>
                     </td>
                     <td>
                       {d.asin ? (
-                        <div className="row-actions" style={{ alignItems: "center" }}>
+                        <div className="row-actions" style={{ alignItems: "center", flexWrap: "wrap" }}>
                           <a href={amzHref!} target="_blank" rel="noopener noreferrer">
                             <code>{d.asin}</code>
                           </a>
-                          <CopyAffButtons url={amzHref!} compact />
+                          <CopyAffButtons
+                            url={amzHref!}
+                            title={displayTitle}
+                            priceText={eur(d.price)}
+                            oldPriceText={d.old_price != null && d.old_price > (d.price ?? 0) ? eur(d.old_price) : undefined}
+                            pct={pct}
+                            voucher={d.voucher_code}
+                          />
                         </div>
                       ) : d.no_asin ? (
                         <span className="pill pill-warn">no_asin</span>
@@ -520,7 +712,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                     <td className="nowrap">
                       <strong>{eur(d.price)}</strong>
                       {d.old_price != null && d.old_price > (d.price ?? 0) && (
-                        <div className="meta"><s>{eur(d.old_price)}</s></div>
+                        <div className="meta"><s>{eur(d.old_price)}</s>{pct ? ` (-${pct}%)` : ""}</div>
                       )}
                     </td>
                     <td className="nowrap">
@@ -528,11 +720,15 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                       <div className="meta">{ago(d.published_at || d.first_seen)}</div>
                     </td>
                     <td className="nowrap">
-                      {d.is_expired ? (
-                        <span className="pill pill-muted">Hết hạn</span>
-                      ) : (
-                        <span className="pill pill-ok">Còn hạn</span>
-                      )}
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        {d.is_expired ? (
+                          <span className="pill pill-muted">Hết hạn</span>
+                        ) : (
+                          <span className="pill pill-ok">Còn hạn</span>
+                        )}
+                        {d.is_price_error === 1 && <span className="pill pill-err">⚡ Lỗi giá</span>}
+                        {d.is_lowest === 1 && <span className="pill pill-warn">📉 Đáy</span>}
+                      </div>
                     </td>
                     <td className="nowrap">
                       <div className="row-actions">

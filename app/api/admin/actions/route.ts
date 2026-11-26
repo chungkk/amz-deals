@@ -8,7 +8,7 @@ import {
   resetNoAsin,
   setDealExpired,
 } from "@/lib/db";
-import { isCrawlRunning, runCrawl } from "@/lib/scheduler";
+import { isCrawlRunning, runCrawl, runPriceCheck } from "@/lib/scheduler";
 
 export const dynamic = "force-dynamic";
 
@@ -100,6 +100,17 @@ export async function POST(req: Request) {
         ok: true,
         started: true,
         message: "Đã kích hoạt crawl trên server. Kết quả sẽ hiện trong lịch sử sau ít phút.",
+      });
+    }
+
+    case "check_prices": {
+      const res = await runPriceCheck("admin-price-check");
+      if (!res.ok) {
+        return Response.json({ ok: false, error: res.error, message: res.error }, { status: 400 });
+      }
+      return Response.json({
+        ...res,
+        message: `Đã kiểm tra ${res.checked} ASIN qua PA-API: cập nhật ${res.updated}, hết hạn ${res.expired}.`,
       });
     }
 

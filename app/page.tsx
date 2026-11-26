@@ -15,6 +15,7 @@ const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) 
 
 const SORTS: Record<string, { label: string; sql: string }> = {
   new: { label: "Neueste", sql: "published_at DESC" },
+  err: { label: "⚡ Preisfehler", sql: "is_price_error DESC, is_lowest DESC, pct IS NULL, pct DESC, published_at DESC" },
   hot: { label: "Beliebt", sql: "temperature DESC, published_at DESC" },
   pct: { label: "Höchster Rabatt", sql: "pct IS NULL, pct DESC, published_at DESC" },
   cheap: { label: "Günstigste", sql: "price IS NULL, price ASC" },
@@ -54,30 +55,37 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
   const settings = getSettings();
   const sort = SORTS[one(sp.sort)] ? one(sp.sort) : "new";
   const range = RANGES[one(sp.d)] ? one(sp.d) : "2";
+  const only = one(sp.only) === "err" ? "err" : "";
   const q = one(sp.q).trim();
 
-  // Public page: only live Amazon deals with an ASIN, so every card links straight to amazon.de.
+  // Public page: only live Amazon deals with an ASIN, deduplicated by ASIN so every card links straight to amazon.de.
   const where: string[] = ["is_expired = 0", "asin IS NOT NULL", "asin <> ''"];
   const args: (string | number)[] = [];
+  if (only === "err") where.push("(is_price_error = 1 OR is_lowest = 1)");
   if (RANGES[range].sec) (where.push("published_at > ?"), args.push(Math.floor(Date.now() / 1000) - RANGES[range].sec));
   if (q) {
-    where.push("(COALESCE(amz_title,'') || ' ' || md_title || ' ' || COALESCE(asin,'')) LIKE ?");
+    where.push("(COALESCE(amz_title,'') || ' ' || md_title || ' ' || COALESCE(asin,'') || ' ' || COALESCE(brand,'')) LIKE ?");
     args.push(`%${q}%`);
   }
   const sql = `
-    SELECT *, CASE WHEN old_price > 0 AND price IS NOT NULL AND old_price > price THEN ROUND(100 * (1 - price / old_price)) END AS pct
-    FROM deals WHERE ${where.join(" AND ")}
+    WITH ranked AS (
+      SELECT *,
+        CASE WHEN old_price > 0 AND price IS NOT NULL AND old_price > price THEN ROUND(100 * (1 - price / old_price)) END AS pct,
+        ROW_NUMBER() OVER (PARTITION BY asin ORDER BY is_price_error DESC, is_lowest DESC, temperature DESC, published_at DESC) AS rn
+      FROM deals WHERE ${where.join(" AND ")}
+    )
+    SELECT * FROM ranked WHERE rn = 1
     ORDER BY ${SORTS[sort].sql} LIMIT 300`;
   const deals = db().prepare(sql).all(...args) as (DealRow & { pct: number | null })[];
 
   const active = (
     db()
-      .prepare("SELECT COUNT(*) c FROM deals WHERE is_expired = 0 AND asin IS NOT NULL AND asin <> ''")
+      .prepare("SELECT COUNT(DISTINCT asin) c FROM deals WHERE is_expired = 0 AND asin IS NOT NULL AND asin <> ''")
       .get() as { c: number }
   ).c;
 
   // "Deal des Tages": biggest discount among today's results (only on the unfiltered start view).
-  const showHero = !q && deals.length > 4;
+  const showHero = !q && !only && deals.length > 4;
   const dayAgo = Date.now() / 1000 - 86400;
   const discounted = deals.filter((d) => d.pct != null && d.pct > 0 && d.price != null);
   const today = discounted.filter((d) => (d.published_at ?? 0) > dayAgo);
@@ -90,8 +98,11 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
     | undefined;
 
   const link = (patch: Record<string, string>) => {
-    const p = new URLSearchParams({ sort, d: range, ...(q && { q }) });
-    for (const [k, v] of Object.entries(patch)) p.set(k, v);
+    const p = new URLSearchParams({ sort, d: range, ...(only && { only }), ...(q && { q }) });
+    for (const [k, v] of Object.entries(patch)) {
+      if (v) p.set(k, v);
+      else p.delete(k);
+    }
     return `/?${p}`;
   };
 
@@ -133,7 +144,11 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
               {(hero.amz_image || hero.md_image) && <img src={(hero.amz_image || hero.md_image)!} alt="" referrerPolicy="no-referrer" />}
             </a>
             <div className="hero-info">
-              <span className="eyebrow">🔥 Deal des Tages</span>
+              <div className="hero-badges">
+                <span className="eyebrow">🔥 Deal des Tages</span>
+                {hero.is_price_error === 1 && <span className="badge-err">⚡ Preisfehler</span>}
+                {hero.is_lowest === 1 && <span className="badge-low">📉 Tiefstpreis</span>}
+              </div>
               <h2>{hero.amz_title || hero.md_title}</h2>
               <div className="hero-price">
                 <strong>{eur(hero.price)}</strong>
@@ -182,6 +197,11 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
               <a key={k} href={link({ sort: k })} className={k === sort ? "on" : ""}>{v.label}</a>
             ))}
           </nav>
+          <nav className="seg seg-sm" aria-label="Filter">
+            <a href={link({ only: only === "err" ? "" : "err" })} className={only === "err" ? "on" : ""}>
+              Nur Preisfehler / Tiefstpreis
+            </a>
+          </nav>
           <nav className="seg seg-sm" aria-label="Zeitraum">
             {Object.entries(RANGES).map(([k, v]) => (
               <a key={k} href={link({ d: k })} className={k === range ? "on" : ""}>{v.label}</a>
@@ -208,6 +228,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                 <a className="p-img" href={href} target="_blank" rel="nofollow sponsored noopener noreferrer">
                   {img && <img src={img} alt="" loading="lazy" referrerPolicy="no-referrer" />}
                   <span className="p-badges">
+                    {d.is_price_error === 1 && <span className="badge-err">⚡ Preisfehler</span>}
+                    {d.is_lowest === 1 && <span className="badge-low">📉 Tiefstpreis</span>}
                     {d.pct != null && d.pct > 0 && <span className="badge-pct">-{d.pct}%</span>}
                     {d.voucher_code && <span className="badge-code">Gutschein</span>}
                   </span>

@@ -16,9 +16,29 @@ const krData = await kr.json();
 const known = new Map(krData.known);
 const pages = Number(process.env.CRAWL_PAGES || krData.settings?.crawlPages || 3);
 const maxAgeDays = Number(process.env.RETENTION_DAYS || krData.settings?.retentionDays || 2);
-const sources = Array.isArray(krData.settings?.sources) ? krData.settings.sources : ["mydealz", "meindeal"];
+const sources = Array.isArray(krData.settings?.sources)
+  ? krData.settings.sources
+  : ["mydealz", "meindeal", "monsterdealz", "dealdoktor", "camel"];
 
-const deals = await crawl({ pages, maxAgeDays, sources, known, log });
+const paapi =
+  process.env.PAAPI_ACCESS_KEY && process.env.PAAPI_SECRET_KEY && process.env.AMAZON_TAG
+    ? {
+        accessKey: process.env.PAAPI_ACCESS_KEY,
+        secretKey: process.env.PAAPI_SECRET_KEY,
+        partnerTag: process.env.AMAZON_TAG,
+        keywords: process.env.PAAPI_KEYWORDS,
+        minSavingPct: Number(process.env.PAAPI_MIN_SAVING_PCT || 30),
+      }
+    : undefined;
+
+const keepa = process.env.KEEPA_API_KEY
+  ? {
+      apiKey: process.env.KEEPA_API_KEY,
+      minDropPct: Number(process.env.KEEPA_MIN_DROP_PCT || 40),
+    }
+  : undefined;
+
+const deals = await crawl({ pages, maxAgeDays, sources, known, paapi, keepa, log });
 const r = await fetch(`${base}/api/ingest`, {
   method: "POST",
   headers,

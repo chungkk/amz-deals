@@ -1,10 +1,10 @@
-import { pruneOldDeals, recordRun, updateSettings, type AppSettings } from "@/lib/db";
+import { pruneOldDeals, recordRun, sanitizeSettingsForClient, updateSettings, type SettingsUpdatePatch } from "@/lib/db";
 import { rescheduleScheduler } from "@/lib/scheduler";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => null)) as (Partial<AppSettings> & { pruneNow?: boolean }) | null;
+  const body = (await req.json().catch(() => null)) as (SettingsUpdatePatch & { pruneNow?: boolean }) | null;
   if (!body || typeof body !== "object") {
     return Response.json({ error: "Invalid payload" }, { status: 400 });
   }
@@ -17,6 +17,19 @@ export async function POST(req: Request) {
     amazonTag: body.amazonTag,
     enableMydealz: body.enableMydealz,
     enableMeindeal: body.enableMeindeal,
+    enableMonsterdealz: body.enableMonsterdealz,
+    enableDealdoktor: body.enableDealdoktor,
+    enableCamel: body.enableCamel,
+    enablePaapiSearch: body.enablePaapiSearch,
+    enableKeepa: body.enableKeepa,
+    paapiAccessKey: body.paapiAccessKey,
+    paapiSecretKey: body.paapiSecretKey,
+    clearPaapiSecret: body.clearPaapiSecret,
+    paapiKeywords: body.paapiKeywords,
+    paapiMinSavingPct: body.paapiMinSavingPct,
+    keepaApiKey: body.keepaApiKey,
+    clearKeepaKey: body.clearKeepaKey,
+    keepaMinDropPct: body.keepaMinDropPct,
   });
 
   rescheduleScheduler();
@@ -31,7 +44,7 @@ export async function POST(req: Request) {
 
   return Response.json({
     ok: true,
-    settings,
+    settings: sanitizeSettingsForClient(settings),
     pruned,
     message:
       pruned > 0

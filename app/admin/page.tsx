@@ -1,5 +1,5 @@
-import { getAdminStats, getRecentRuns, getSettings, listDealsAdmin } from "@/lib/db";
-import { isCrawlRunning } from "@/lib/scheduler";
+import { getAdminStats, getRecentRuns, getSettings, listDealsAdmin, sanitizeSettingsForClient } from "@/lib/db";
+import { getCrawlProgress, isCrawlRunning } from "@/lib/scheduler";
 import AdminClient from "./AdminClient";
 
 export const dynamic = "force-dynamic";
@@ -12,10 +12,11 @@ export const metadata = {
 export default function AdminPage() {
   const initial = {
     stats: getAdminStats(),
-    settings: getSettings(),
+    settings: sanitizeSettingsForClient(getSettings()),
     runs: getRecentRuns(30),
     deals: listDealsAdmin({ limit: 100 }),
     crawling: isCrawlRunning(),
+    crawlProgress: getCrawlProgress(),
   };
   return <AdminClient initial={initial} />;
 }
