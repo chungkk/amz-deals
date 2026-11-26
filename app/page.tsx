@@ -70,6 +70,21 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
     ORDER BY ${SORTS[sort].sql} LIMIT 300`;
   const deals = db().prepare(sql).all(...args) as (DealRow & { pct: number | null })[];
 
+  const active = (
+    db()
+      .prepare("SELECT COUNT(*) c FROM deals WHERE is_expired = 0 AND asin IS NOT NULL AND asin <> ''")
+      .get() as { c: number }
+  ).c;
+
+  // "Deal des Tages": biggest discount among today's results (only on the unfiltered start view).
+  const showHero = !q && deals.length > 4;
+  const dayAgo = Date.now() / 1000 - 86400;
+  const discounted = deals.filter((d) => d.pct != null && d.pct > 0 && d.price != null);
+  const today = discounted.filter((d) => (d.published_at ?? 0) > dayAgo);
+  const byPct = (today.length >= 4 ? today : discounted).sort((a, b) => b.pct! - a.pct!);
+  const hero = showHero ? byPct[0] : undefined;
+  const picks = showHero ? byPct.slice(1, 4) : [];
+
   const lastOk = db().prepare("SELECT at FROM crawl_runs WHERE ok = 1 ORDER BY id DESC LIMIT 1").get() as
     | { at: number }
     | undefined;
@@ -81,88 +96,198 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
   };
 
   return (
-    <main className="public">
-      <header className="hero">
-        <div className="hero-txt">
-          <h1>Top-Angebote</h1>
-          <p className="tagline">
-            Die besten Amazon-Deals des Tages – handverlesen, ständig aktualisiert.
-            {lastOk && <span className="meta"> Zuletzt aktualisiert {ago(lastOk.at)}.</span>}
-          </p>
+    <div className="shop">
+      <div className="topbar">
+        <span>✓ Täglich neue Amazon-Angebote</span>
+        <span>✓ Direkt bei Amazon kaufen</span>
+        <span>✓ Kostenlos &amp; ohne Anmeldung</span>
+      </div>
+
+      <header className="shop-head">
+        <div className="shop-head-in">
+          <a className="logo" href="/">
+            <span className="logo-mark" aria-hidden="true">%</span>
+            <span className="logo-txt">
+              Top<b>Angebote</b>
+            </span>
+          </a>
+          <form className="search" action="/">
+            <input type="search" name="q" defaultValue={q} placeholder="Wonach suchst du? z. B. Kopfhörer, Kaffeemaschine …" aria-label="Angebote durchsuchen" />
+            <input type="hidden" name="sort" value={sort} />
+            <input type="hidden" name="d" value={range} />
+            <button aria-label="Suchen">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M10 2a8 8 0 0 1 6.32 12.9l5.39 5.4-1.41 1.4-5.4-5.38A8 8 0 1 1 10 2Zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z"/></svg>
+            </button>
+          </form>
+          <div className="head-stat">
+            <b>{active.toLocaleString("de-DE")}</b>
+            <span>aktive Deals</span>
+          </div>
         </div>
-        <form className="filters" action="/">
-          <input type="search" name="q" defaultValue={q} placeholder="Produkt suchen …" aria-label="Produkt suchen" />
-          <input type="hidden" name="sort" value={sort} />
-          <input type="hidden" name="d" value={range} />
-          <button>Suchen</button>
-        </form>
-        <nav className="tabs" aria-label="Sortierung und Zeitraum">
-          {Object.entries(SORTS).map(([k, v]) => (
-            <a key={k} href={link({ sort: k })} className={k === sort ? "on" : ""}>{v.label}</a>
-          ))}
-          <span className="sep" />
-          {Object.entries(RANGES).map(([k, v]) => (
-            <a key={k} href={link({ d: k })} className={k === range ? "on" : ""}>{v.label}</a>
-          ))}
-        </nav>
       </header>
 
-      {deals.length === 0 && <p className="empty">Keine Angebote gefunden. Versuch es mit einem anderen Suchbegriff oder Zeitraum.</p>}
-
-      <ul className="grid">
-        {deals.map((d) => {
-          const img = d.amz_image || d.md_image;
-          const href = amazonUrl(d.asin!, settings.amazonTag);
-          const title = d.amz_title || d.md_title;
-          const hasOld = d.old_price != null && d.old_price > (d.price ?? 0);
-          return (
-            <li key={d.thread_id} className="card">
-              <a className="img" href={href} target="_blank" rel="nofollow sponsored noopener noreferrer">
-                {img && <img src={img} alt="" loading="lazy" referrerPolicy="no-referrer" />}
-                {d.pct != null && d.pct > 0 && <span className="pct">-{d.pct}%</span>}
-              </a>
-              <div className="body">
-                <span className="when">{ago(d.published_at)}</span>
-                <a className="title" href={href} target="_blank" rel="nofollow sponsored noopener noreferrer" title={title}>
-                  {title}
-                </a>
-                <div className="price">
-                  {d.price != null && <strong>{eur(d.price)}</strong>}
-                  {hasOld && <s>{eur(d.old_price)}</s>}
-                </div>
-                {d.voucher_code && <div className="code">Gutscheincode: <code>{d.voucher_code}</code></div>}
-                <div className="actions">
-                  <a className="cta" href={href} target="_blank" rel="nofollow sponsored noopener noreferrer">
-                    Zum Angebot
-                  </a>
-                  <ShareButton
-                    url={href}
-                    title={title}
-                    text={[
-                      title,
-                      d.price != null ? `${eur(d.price)}${hasOld ? ` statt ${eur(d.old_price)}` : ""}${d.pct ? ` (-${d.pct}%)` : ""}` : "",
-                      d.voucher_code ? `Gutscheincode: ${d.voucher_code}` : "",
-                    ]
-                      .filter(Boolean)
-                      .join("\n")}
-                  />
-                </div>
+      <main className="shop-main">
+        {hero && (
+          <section className="hero-deal" aria-label="Deal des Tages">
+            <a className="hero-img" href={amazonUrl(hero.asin!, settings.amazonTag)} target="_blank" rel="nofollow sponsored noopener noreferrer">
+              {(hero.amz_image || hero.md_image) && <img src={(hero.amz_image || hero.md_image)!} alt="" referrerPolicy="no-referrer" />}
+            </a>
+            <div className="hero-info">
+              <span className="eyebrow">🔥 Deal des Tages</span>
+              <h2>{hero.amz_title || hero.md_title}</h2>
+              <div className="hero-price">
+                <strong>{eur(hero.price)}</strong>
+                {hero.old_price != null && hero.old_price > (hero.price ?? 0) && <s>{eur(hero.old_price)}</s>}
+                <span className="badge-pct">-{hero.pct}%</span>
               </div>
-            </li>
-          );
-        })}
-      </ul>
+              {hero.old_price != null && hero.price != null && hero.old_price > hero.price && (
+                <p className="save">Du sparst {eur(hero.old_price - hero.price)}</p>
+              )}
+              {hero.voucher_code && <p className="voucher">Mit Gutscheincode <code>{hero.voucher_code}</code></p>}
+              <a className="btn-buy btn-lg" href={amazonUrl(hero.asin!, settings.amazonTag)} target="_blank" rel="nofollow sponsored noopener noreferrer">
+                Jetzt bei Amazon ansehen
+              </a>
+            </div>
+            {picks.length > 0 && (
+              <aside className="picks">
+                <h3>Top-Rabatte</h3>
+                {picks.map((d) => (
+                  <a key={d.thread_id} className="pick" href={amazonUrl(d.asin!, settings.amazonTag)} target="_blank" rel="nofollow sponsored noopener noreferrer">
+                    <span className="pick-img">
+                      {(d.amz_image || d.md_image) && <img src={(d.amz_image || d.md_image)!} alt="" loading="lazy" referrerPolicy="no-referrer" />}
+                    </span>
+                    <span className="pick-txt">
+                      <span className="pick-title">{d.amz_title || d.md_title}</span>
+                      <span className="pick-price">
+                        <b>{eur(d.price)}</b> <em>-{d.pct}%</em>
+                      </span>
+                    </span>
+                  </a>
+                ))}
+              </aside>
+            )}
+          </section>
+        )}
 
-      <footer className="site-foot">
-        <p>
-          * Preise inkl. MwSt., Stand zum angegebenen Zeitpunkt. Preise und Verfügbarkeit können sich jederzeit ändern;
-          maßgeblich ist der Preis auf Amazon zum Zeitpunkt des Kaufs.
-        </p>
-        <p>
-          Hinweis: Links auf dieser Seite sind Affiliate-Links (Werbung). Als Amazon-Partner verdiene ich an qualifizierten
-          Verkäufen. Für dich ändert sich am Preis nichts.
-        </p>
+        <div className="toolbar">
+          <div className="result-count">
+            <h1>{q ? <>Ergebnisse für „{q}“</> : "Alle Angebote"}</h1>
+            <span>
+              {deals.length} {deals.length === 1 ? "Angebot" : "Angebote"}
+              {lastOk && <> · aktualisiert {ago(lastOk.at)}</>}
+            </span>
+          </div>
+          <nav className="seg" aria-label="Sortieren">
+            {Object.entries(SORTS).map(([k, v]) => (
+              <a key={k} href={link({ sort: k })} className={k === sort ? "on" : ""}>{v.label}</a>
+            ))}
+          </nav>
+          <nav className="seg seg-sm" aria-label="Zeitraum">
+            {Object.entries(RANGES).map(([k, v]) => (
+              <a key={k} href={link({ d: k })} className={k === range ? "on" : ""}>{v.label}</a>
+            ))}
+          </nav>
+        </div>
+
+        {deals.length === 0 && (
+          <div className="empty-state">
+            <p><b>Keine Angebote gefunden.</b></p>
+            <p>Versuch es mit einem anderen Suchbegriff oder einem längeren Zeitraum.</p>
+            <a className="btn-buy" href="/?d=all">Alle Angebote anzeigen</a>
+          </div>
+        )}
+
+        <ul className="products">
+          {deals.map((d) => {
+            const img = d.amz_image || d.md_image;
+            const href = amazonUrl(d.asin!, settings.amazonTag);
+            const title = d.amz_title || d.md_title;
+            const hasOld = d.old_price != null && d.price != null && d.old_price > d.price;
+            return (
+              <li key={d.thread_id} className="product">
+                <a className="p-img" href={href} target="_blank" rel="nofollow sponsored noopener noreferrer">
+                  {img && <img src={img} alt="" loading="lazy" referrerPolicy="no-referrer" />}
+                  <span className="p-badges">
+                    {d.pct != null && d.pct > 0 && <span className="badge-pct">-{d.pct}%</span>}
+                    {d.voucher_code && <span className="badge-code">Gutschein</span>}
+                  </span>
+                </a>
+                <div className="p-body">
+                  <a className="p-title" href={href} target="_blank" rel="nofollow sponsored noopener noreferrer" title={title}>
+                    {title}
+                  </a>
+                  <div className="p-price">
+                    {d.price != null ? <strong>{eur(d.price)}</strong> : <strong className="p-na">Preis auf Amazon</strong>}
+                    {hasOld && <s>{eur(d.old_price)}</s>}
+                  </div>
+                  <div className="p-meta">
+                    {hasOld ? <span className="save">Du sparst {eur(d.old_price! - d.price!)}</span> : <span />}
+                    <span className="when">{ago(d.published_at)}</span>
+                  </div>
+                  {d.voucher_code && (
+                    <div className="p-code">
+                      Code: <code>{d.voucher_code}</code>
+                    </div>
+                  )}
+                  <div className="p-actions">
+                    <a className="btn-buy" href={href} target="_blank" rel="nofollow sponsored noopener noreferrer">
+                      Zum Angebot
+                    </a>
+                    <ShareButton
+                      url={href}
+                      title={title}
+                      text={[
+                        title,
+                        d.price != null ? `${eur(d.price)}${hasOld ? ` statt ${eur(d.old_price)}` : ""}${d.pct ? ` (-${d.pct}%)` : ""}` : "",
+                        d.voucher_code ? `Gutscheincode: ${d.voucher_code}` : "",
+                      ]
+                        .filter(Boolean)
+                        .join("\n")}
+                    />
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </main>
+
+      <section className="usp">
+        <div>
+          <b>Ständig aktualisiert</b>
+          <span>Neue Angebote rund um die Uhr, abgelaufene Deals verschwinden automatisch.</span>
+        </div>
+        <div>
+          <b>Direkt zu Amazon</b>
+          <span>Jeder Link führt direkt zum Produkt auf amazon.de – kein Umweg, keine Anmeldung.</span>
+        </div>
+        <div>
+          <b>Einfach teilen</b>
+          <span>Ein Klick auf „Teilen“ – und der Deal ist bei Freunden und Familie.</span>
+        </div>
+      </section>
+
+      <footer className="shop-foot">
+        <div className="shop-foot-in">
+          <div>
+            <span className="logo-txt">
+              Top<b>Angebote</b>
+            </span>
+            <p>Die besten Amazon-Angebote für Deutschland – jeden Tag neu.</p>
+          </div>
+          <div className="fine">
+            <p>
+              * Alle Preise inkl. MwSt. zum angegebenen Zeitpunkt. Preise und Verfügbarkeit können sich jederzeit ändern;
+              maßgeblich ist der Preis auf Amazon zum Zeitpunkt des Kaufs.
+            </p>
+            <p>
+              Hinweis: Links auf dieser Seite sind Affiliate-Links (Werbung). Als Amazon-Partner verdiene ich an qualifizierten
+              Verkäufen. Für dich ändert sich am Preis nichts.
+            </p>
+            <p>© {new Date().getFullYear()} TopAngebote</p>
+          </div>
+        </div>
       </footer>
-    </main>
+    </div>
   );
 }
