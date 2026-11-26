@@ -49,12 +49,6 @@ function amazonUrl(asin: string, tag: string) {
   return `https://amazon.de/dp/${asin}${tag ? `?tag=${encodeURIComponent(tag)}` : ""}`;
 }
 
-function dealSourceUrl(d: DealRow) {
-  if (d.source_url) return d.source_url;
-  if (d.source === "meindeal") return `https://www.mein-deal.com/?p=${Math.abs(d.thread_id)}`;
-  return `https://www.mydealz.de/deals/${d.slug ? d.slug + "-" : ""}${d.thread_id}`;
-}
-
 export default async function Page({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
   const settings = getSettings();
@@ -150,18 +144,22 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
       <ul className="grid">
         {deals.map((d) => {
           const img = d.amz_image || d.md_image;
-          const srcUrl = dealSourceUrl(d);
-          const href = d.asin
-            ? amazonUrl(d.asin, settings.amazonTag)
-            : d.source === "meindeal"
-              ? srcUrl
-              : `https://www.mydealz.de/visit/threadmain/${d.thread_id}`;
+          const href = d.asin ? amazonUrl(d.asin, settings.amazonTag) : null;
           return (
             <li key={d.thread_id} className={d.is_expired ? "card expired" : "card"}>
-              <a className="img" href={href} target="_blank" rel="noopener noreferrer">
-                {img && <img src={img} alt="" loading="lazy" referrerPolicy="no-referrer" />}
-                {d.pct != null && d.pct > 0 && <span className="pct">-{d.pct}%</span>}
-              </a>
+              {(() => {
+                const inner = (
+                  <>
+                    {img && <img src={img} alt="" loading="lazy" referrerPolicy="no-referrer" />}
+                    {d.pct != null && d.pct > 0 && <span className="pct">-{d.pct}%</span>}
+                  </>
+                );
+                return href ? (
+                  <a className="img" href={href} target="_blank" rel="noopener noreferrer">{inner}</a>
+                ) : (
+                  <div className="img">{inner}</div>
+                );
+              })()}
               <div className="body">
                 <div className="row">
                   {d.source === "meindeal" ? (
@@ -171,17 +169,21 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                   )}
                   <span className="when">{ago(d.published_at)}</span>
                 </div>
-                <a className="title" href={href} target="_blank" rel="noopener noreferrer" title={d.md_title}>
-                  {d.amz_title || d.md_title}
-                </a>
+                {href ? (
+                  <a className="title" href={href} target="_blank" rel="noopener noreferrer" title={d.md_title}>
+                    {d.amz_title || d.md_title}
+                  </a>
+                ) : (
+                  <span className="title" title={d.md_title}>{d.amz_title || d.md_title}</span>
+                )}
                 <div className="price">
                   <strong>{eur(d.price)}</strong>
                   {d.old_price != null && d.old_price > (d.price ?? 0) && <s>{eur(d.old_price)}</s>}
                 </div>
                 {d.voucher_code && <div className="code">Code: <code>{d.voucher_code}</code></div>}
                 <div className="links">
-                  {d.asin ? <a href={href} target="_blank" rel="noopener noreferrer">Amazon ↗</a> : <span className="muted">không có ASIN</span>}
-                  {d.asin && (
+                  {href ? <a href={href} target="_blank" rel="noopener noreferrer">Amazon ↗</a> : <span className="muted">không có ASIN</span>}
+                  {href && (
                     <CopyAffButtons
                       url={href}
                       title={d.amz_title || d.md_title}

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Install or update macOS LaunchAgent to run scripts/push-cron.sh every 2 hours (7200s).
+# Install or update macOS LaunchAgent to run scripts/push-cron.sh every 30 minutes (1800s).
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LABEL="biz.halle.amz-deals-push"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
 LOG_FILE="$HOME/Library/Logs/amz-deals-push.log"
-INTERVAL_SEC="${PUSH_INTERVAL_SEC:-7200}"
+INTERVAL_SEC="${PUSH_INTERVAL_SEC:-1800}"
 NODE_BIN="$(command -v node || echo /opt/homebrew/bin/node)"
 
 chmod +x "$PROJECT_DIR/scripts/push-cron.sh"

@@ -89,7 +89,7 @@ function envDefaults(): AppSettings {
   return {
     retentionDays: clamp(Number(process.env.RETENTION_DAYS || 2), 1, 90, 2),
     crawlPages: clamp(Number(process.env.CRAWL_PAGES || 3), 1, 20, 3),
-    crawlIntervalMin: envInterval > 0 ? clamp(envInterval, 15, 1440, 120) : 120,
+    crawlIntervalMin: envInterval > 0 ? clamp(envInterval, 15, 1440, 30) : 30,
     serverCrawlEnabled: envInterval > 0,
     amazonTag: (process.env.AMAZON_TAG || "").trim(),
     enableMydealz: true,
