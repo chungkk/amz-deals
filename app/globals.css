@@ -223,3 +223,29 @@ h2 { margin: 0 0 12px; font-size: 16px; }
 .src-meindeal { background: var(--green-soft); color: var(--green); }
 .src-mydealz { background: var(--accent-soft); color: var(--accent); }
 .chk-group { display: grid; gap: 8px; margin-top: 12px; }
+
+/* Public deals page */
+.public { max-width: 1280px; }
+.hero { gap: 14px; padding: 8px 0 4px; }
+.hero h1 { font-size: 28px; letter-spacing: -.01em; }
+.tagline { margin: 4px 0 0; color: var(--muted); font-size: 15px; }
+.tagline .meta { font-size: 13px; }
+.public .filters input[type="search"] { flex: 1 1 280px; max-width: 520px; }
+.public .when { font-size: 12px; }
+.public .price strong { font-size: 20px; }
+.actions { display: flex; gap: 8px; align-items: center; border-top: 1px solid var(--line); padding-top: 10px; }
+.cta {
+  flex: 1; text-align: center; text-decoration: none; font-weight: 600; font-size: 13px;
+  padding: 7px 10px; border-radius: 8px; background: var(--accent); color: #fff;
+}
+.cta:hover { filter: brightness(1.06); }
+.share-btn {
+  font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+}
+.share-btn:hover { border-color: var(--accent); color: var(--accent); }
+.site-foot {
+  margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 12px; display: grid; gap: 6px;
+}
+.site-foot p { margin: 0; }

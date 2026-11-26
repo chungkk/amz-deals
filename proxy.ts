@@ -1,11 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { checkBasicAuth } from "@/lib/auth";
 
-// Whole site sits behind Basic auth (password changeable in /admin).
+// The public deals page (/) is open to everyone; everything else (/admin, /api/*) sits behind Basic auth
+// (password changeable in /admin).
 // The push script (scripts/push.mjs) may instead authenticate with x-ingest-token on its two endpoints.
 const TOKEN_PATHS = new Set(["/api/ingest", "/api/known"]);
+const PUBLIC_PATHS = new Set(["/", "/robots.txt"]);
 
 export function proxy(req: NextRequest) {
+  if (PUBLIC_PATHS.has(req.nextUrl.pathname)) return NextResponse.next();
   const token = process.env.INGEST_TOKEN;
   if (token && TOKEN_PATHS.has(req.nextUrl.pathname) && req.headers.get("x-ingest-token") === token) {
     return NextResponse.next();

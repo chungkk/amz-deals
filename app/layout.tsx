@@ -4,7 +4,7 @@ export const metadata = { title: "Amazon Deals", robots: { index: false, follow:
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="vi">
+    <html lang="de">
       <body>{children}</body>
     </html>
   );
