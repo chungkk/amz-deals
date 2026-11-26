@@ -22,6 +22,8 @@ export async function POST(req: Request) {
     enableCamel: body.enableCamel,
     enablePaapiSearch: body.enablePaapiSearch,
     enableKeepa: body.enableKeepa,
+    enableWatchlist: body.enableWatchlist,
+    watchlistAutoHarvest: body.watchlistAutoHarvest,
     paapiAccessKey: body.paapiAccessKey,
     paapiSecretKey: body.paapiSecretKey,
     clearPaapiSecret: body.clearPaapiSecret,

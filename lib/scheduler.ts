@@ -1,14 +1,18 @@
-import { crawl } from "./crawler.mjs";
+import { crawl, fetchAmazon } from "./crawler.mjs";
 import {
   applyPriceChecks,
   getEnabledSources,
   getSettings,
+  getWatchlistForCheck,
+  harvestDealsArrayToWatchlist,
   knownMap,
   listActiveDealsWithAsin,
   pruneOldDeals,
   recordRun,
+  recordWatchlistChecks,
   upsertDeals,
   type DealIn,
+  type WatchlistCheckInput,
 } from "./db";
 import { getItemsByAsin, hasPaApiCreds } from "./paapi.mjs";
 
@@ -76,6 +80,19 @@ export async function runCrawl(source = "server") {
       log: (m: string) => (logs.push(m), console.log(`[crawl] ${m}`)),
     })) as DealIn[];
     const r = upsertDeals(deals);
+    if (settings.watchlistAutoHarvest) {
+      const harvested = harvestDealsArrayToWatchlist(deals, settings.paapiKeywords);
+      if (harvested > 0) logs.push(`watchlist +${harvested} brand ASIN`);
+    }
+    if (settings.enableWatchlist) {
+      try {
+        state.progress = "Đang quét Watchlist ASIN…";
+        const wl = await runWatchlistCheck("watchlist", { recordLog: false });
+        if (wl.checked > 0) logs.push(`watchlist checked ${wl.checked}, triggered ${wl.triggered}`);
+      } catch (we) {
+        logs.push(`watchlist err: ${we instanceof Error ? we.message : String(we)}`);
+      }
+    }
     const pruned = pruneOldDeals(settings.retentionDays);
     if (pruned > 0) logs.push(`pruned ${pruned} old deal(s)`);
     recordRun(source, true, r.count, r.added, logs.join("; "));
@@ -131,6 +148,76 @@ export async function runPriceCheck(source = "price-check") {
   const msg = `Checked ${res.checked}/${activeDeals.length} ASINs, updated ${res.updated}, marked expired ${res.expired}${logs.length ? ` (${logs.join("; ")})` : ""}`;
   recordRun(source, true, res.checked, 0, msg);
   return { ok: true, ...res, message: msg };
+}
+
+export async function runWatchlistCheck(
+  source = "watchlist",
+  { recordLog = true }: { recordLog?: boolean } = {},
+) {
+  const settings = getSettings();
+  const creds = {
+    accessKey: settings.paapiAccessKey,
+    secretKey: settings.paapiSecretKey,
+    partnerTag: settings.amazonTag,
+  };
+  const usePaApi = hasPaApiCreds(creds);
+  const batch = getWatchlistForCheck(usePaApi ? 100 : 15);
+  if (batch.length === 0) {
+    return { ok: true, checked: 0, triggered: 0, mode: usePaApi ? "paapi" : "html", message: "Watchlist đang trống." };
+  }
+
+  const results: WatchlistCheckInput[] = [];
+  if (usePaApi) {
+    const itemsMap = await getItemsByAsin(
+      batch.map((w) => w.asin),
+      creds,
+      { log: (m: string) => console.log(`[watchlist] ${m}`) },
+    );
+    for (const w of batch) {
+      const item = itemsMap.get(w.asin.toUpperCase());
+      if (!item) continue;
+      results.push({
+        asin: w.asin,
+        title: item.title,
+        image: item.image,
+        brand: item.brand,
+        price: item.price,
+        oldPrice: item.oldPrice,
+        inStock: item.inStock,
+      });
+    }
+  } else {
+    let idx = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(2, batch.length) }, async () => {
+        while (idx < batch.length) {
+          const w = batch[idx++];
+          try {
+            const a = await fetchAmazon(w.asin);
+            if (a) {
+              results.push({
+                asin: w.asin,
+                title: a.title,
+                image: a.image,
+                price: a.price,
+                oldPrice: a.oldPrice,
+                inStock: a.inStock,
+              });
+            }
+          } catch (e) {
+            console.log(`[watchlist] ${w.asin}: ${e instanceof Error ? e.message : String(e)}`);
+          }
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }),
+    );
+  }
+
+  const res = recordWatchlistChecks(results);
+  const mode = usePaApi ? "PA-API" : "HTML";
+  const msg = `Watchlist (${mode}): quét ${res.checked}/${batch.length} ASIN, phát hiện ${res.triggered} deal giảm sâu`;
+  if (recordLog) recordRun(source, true, res.checked, res.triggered, msg);
+  return { ok: true, ...res, mode, message: msg };
 }
 
 export function rescheduleScheduler() {

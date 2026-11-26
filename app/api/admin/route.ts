@@ -1,4 +1,4 @@
-import { getAdminStats, getRecentRuns, getSettings, listDealsAdmin, sanitizeSettingsForClient } from "@/lib/db";
+import { getAdminStats, getRecentRuns, getSettings, listDealsAdmin, listWatchlist, sanitizeSettingsForClient } from "@/lib/db";
 import { getCrawlProgress, isCrawlRunning } from "@/lib/scheduler";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +15,7 @@ export function GET(req: Request) {
     settings: sanitizeSettingsForClient(getSettings()),
     runs: getRecentRuns(30),
     deals: listDealsAdmin({ q, filter, source, limit }),
+    watchlist: listWatchlist({ limit: 150 }),
     crawling: isCrawlRunning(),
     crawlProgress: getCrawlProgress(),
   });

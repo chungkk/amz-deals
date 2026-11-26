@@ -1,4 +1,4 @@
-import { getAdminStats, getRecentRuns, getSettings, listDealsAdmin, sanitizeSettingsForClient } from "@/lib/db";
+import { getAdminStats, getRecentRuns, getSettings, listDealsAdmin, listWatchlist, sanitizeSettingsForClient } from "@/lib/db";
 import { getCrawlProgress, isCrawlRunning } from "@/lib/scheduler";
 import AdminClient from "./AdminClient";
 
@@ -15,6 +15,7 @@ export default function AdminPage() {
     settings: sanitizeSettingsForClient(getSettings()),
     runs: getRecentRuns(30),
     deals: listDealsAdmin({ limit: 100 }),
+    watchlist: listWatchlist({ limit: 150 }),
     crawling: isCrawlRunning(),
     crawlProgress: getCrawlProgress(),
   };

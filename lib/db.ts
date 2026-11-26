@@ -49,6 +49,22 @@ export function db(): DatabaseSync {
       recorded_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS ph_asin_time ON price_history(asin, recorded_at DESC);
+    CREATE TABLE IF NOT EXISTS watchlist (
+      asin           TEXT PRIMARY KEY,
+      note           TEXT,
+      brand          TEXT,
+      title          TEXT,
+      image          TEXT,
+      target_price   REAL,
+      min_drop_pct   INTEGER NOT NULL DEFAULT 20,
+      last_price     REAL,
+      avg_price_90d  REAL,
+      lowest_price   REAL,
+      in_stock       INTEGER NOT NULL DEFAULT 1,
+      last_checked   INTEGER,
+      created_at     INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS wl_checked ON watchlist(last_checked ASC);
     CREATE TABLE IF NOT EXISTS crawl_runs (
       id       INTEGER PRIMARY KEY AUTOINCREMENT,
       at       INTEGER NOT NULL,
@@ -97,7 +113,8 @@ export type DealSource =
   | "dealdoktor"
   | "camel"
   | "paapi"
-  | "keepa";
+  | "keepa"
+  | "watchlist";
 
 export const ALL_SOURCES: readonly DealSource[] = [
   "mydealz",
@@ -107,6 +124,7 @@ export const ALL_SOURCES: readonly DealSource[] = [
   "camel",
   "paapi",
   "keepa",
+  "watchlist",
 ];
 
 export const PUBLIC_SOURCES: readonly DealSource[] = [
@@ -133,6 +151,8 @@ export type AppSettings = {
   enableCamel: boolean;
   enablePaapiSearch: boolean;
   enableKeepa: boolean;
+  enableWatchlist: boolean;
+  watchlistAutoHarvest: boolean;
   paapiAccessKey: string;
   paapiSecretKey: string;
   paapiKeywords: string;
@@ -169,6 +189,8 @@ function envDefaults(): AppSettings {
     enableCamel: true,
     enablePaapiSearch: Boolean(process.env.PAAPI_ACCESS_KEY && process.env.PAAPI_SECRET_KEY),
     enableKeepa: Boolean(process.env.KEEPA_API_KEY),
+    enableWatchlist: true,
+    watchlistAutoHarvest: true,
     paapiAccessKey: (process.env.PAAPI_ACCESS_KEY || "").trim(),
     paapiSecretKey: (process.env.PAAPI_SECRET_KEY || "").trim(),
     paapiKeywords: (process.env.PAAPI_KEYWORDS || DEFAULT_PAAPI_KEYWORDS).trim(),
@@ -197,6 +219,10 @@ export function getSettings(): AppSettings {
     enableCamel: map.has("enable_camel") ? map.get("enable_camel") === "1" : defs.enableCamel,
     enablePaapiSearch: map.has("enable_paapi_search") ? map.get("enable_paapi_search") === "1" : defs.enablePaapiSearch,
     enableKeepa: map.has("enable_keepa") ? map.get("enable_keepa") === "1" : defs.enableKeepa,
+    enableWatchlist: map.has("enable_watchlist") ? map.get("enable_watchlist") === "1" : defs.enableWatchlist,
+    watchlistAutoHarvest: map.has("watchlist_auto_harvest")
+      ? map.get("watchlist_auto_harvest") === "1"
+      : defs.watchlistAutoHarvest,
     paapiAccessKey: map.has("paapi_access_key") ? String(map.get("paapi_access_key") ?? "").trim() : defs.paapiAccessKey,
     paapiSecretKey: map.has("paapi_secret_key") ? String(map.get("paapi_secret_key") ?? "").trim() : defs.paapiSecretKey,
     paapiKeywords: map.has("paapi_keywords") ? String(map.get("paapi_keywords") ?? "").trim() : defs.paapiKeywords,
@@ -261,6 +287,9 @@ export function updateSettings(patch: SettingsUpdatePatch): AppSettings {
     enableCamel: patch.enableCamel !== undefined ? Boolean(patch.enableCamel) : cur.enableCamel,
     enablePaapiSearch: patch.enablePaapiSearch !== undefined ? Boolean(patch.enablePaapiSearch) : cur.enablePaapiSearch,
     enableKeepa: patch.enableKeepa !== undefined ? Boolean(patch.enableKeepa) : cur.enableKeepa,
+    enableWatchlist: patch.enableWatchlist !== undefined ? Boolean(patch.enableWatchlist) : cur.enableWatchlist,
+    watchlistAutoHarvest:
+      patch.watchlistAutoHarvest !== undefined ? Boolean(patch.watchlistAutoHarvest) : cur.watchlistAutoHarvest,
     paapiAccessKey: patch.paapiAccessKey !== undefined ? String(patch.paapiAccessKey).trim().slice(0, 200) : cur.paapiAccessKey,
     paapiSecretKey: nextPaapiSecret,
     paapiKeywords: patch.paapiKeywords !== undefined ? String(patch.paapiKeywords).trim().slice(0, 1000) : cur.paapiKeywords,
@@ -286,6 +315,8 @@ export function updateSettings(patch: SettingsUpdatePatch): AppSettings {
     stmt.run("enable_camel", next.enableCamel ? "1" : "0");
     stmt.run("enable_paapi_search", next.enablePaapiSearch ? "1" : "0");
     stmt.run("enable_keepa", next.enableKeepa ? "1" : "0");
+    stmt.run("enable_watchlist", next.enableWatchlist ? "1" : "0");
+    stmt.run("watchlist_auto_harvest", next.watchlistAutoHarvest ? "1" : "0");
     stmt.run("paapi_access_key", next.paapiAccessKey);
     stmt.run("paapi_secret_key", next.paapiSecretKey);
     stmt.run("paapi_keywords", next.paapiKeywords);
@@ -654,6 +685,7 @@ export type AdminStats = {
   withAmzTitle: number;
   priceErrors: number;
   trackedAsins: number;
+  watchlistCount: number;
   olderThanRetention: number;
   oldestAt: number | null;
   newestAt: number | null;
@@ -685,6 +717,7 @@ export function getAdminStats(): AdminStats {
         SUM(CASE WHEN source = 'camel' THEN 1 ELSE 0 END) AS src_camel,
         SUM(CASE WHEN source = 'paapi' THEN 1 ELSE 0 END) AS src_paapi,
         SUM(CASE WHEN source = 'keepa' THEN 1 ELSE 0 END) AS src_keepa,
+        SUM(CASE WHEN source = 'watchlist' THEN 1 ELSE 0 END) AS src_watchlist,
         MIN(COALESCE(published_at, first_seen)) AS oldest_at,
         MAX(COALESCE(published_at, first_seen)) AS newest_at
       FROM deals`,
@@ -693,6 +726,9 @@ export function getAdminStats(): AdminStats {
 
   const trackedAsins = Number(
     (d.prepare("SELECT COUNT(DISTINCT asin) AS c FROM price_history").get() as { c?: number } | undefined)?.c ?? 0,
+  );
+  const watchlistCount = Number(
+    (d.prepare("SELECT COUNT(*) AS c FROM watchlist").get() as { c?: number } | undefined)?.c ?? 0,
   );
   const pageCount = (d.prepare("PRAGMA page_count").get() as { page_count?: number } | undefined)?.page_count ?? 0;
   const pageSize = (d.prepare("PRAGMA page_size").get() as { page_size?: number } | undefined)?.page_size ?? 0;
@@ -714,6 +750,7 @@ export function getAdminStats(): AdminStats {
     withAmzTitle: Number(row.with_amz_title ?? 0),
     priceErrors: Number(row.price_errors ?? 0),
     trackedAsins,
+    watchlistCount,
     olderThanRetention: Number(row.older_than_retention ?? 0),
     oldestAt: row.oldest_at ?? null,
     newestAt: row.newest_at ?? null,
@@ -726,6 +763,7 @@ export function getAdminStats(): AdminStats {
       camel: Number(row.src_camel ?? 0),
       paapi: Number(row.src_paapi ?? 0),
       keepa: Number(row.src_keepa ?? 0),
+      watchlist: Number(row.src_watchlist ?? 0),
     },
     lastOk: lastOkRow ? { at: Number(lastOkRow.at), source: String(lastOkRow.source) } : null,
     lastRun: lastRunRow ? { ...lastRunRow } : null,
@@ -768,4 +806,367 @@ export function listDealsAdmin({
   args.push(clamp(limit, 1, 500, 100));
   const rows = db().prepare(sql).all(...args) as DealRow[];
   return rows.map((r) => ({ ...r }));
+}
+
+export type WatchlistRow = {
+  asin: string;
+  note: string | null;
+  brand: string | null;
+  title: string | null;
+  image: string | null;
+  target_price: number | null;
+  min_drop_pct: number;
+  last_price: number | null;
+  avg_price_90d: number | null;
+  lowest_price: number | null;
+  in_stock: number;
+  last_checked: number | null;
+  created_at: number;
+};
+
+export function asinHash(asin: string): number {
+  let h = 2166136261;
+  const s = String(asin || "").toUpperCase();
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 90_000_000) + 1;
+}
+
+export function extractAsinsFromText(input: string): string[] {
+  const found = new Set<string>();
+  const urlRe = /\/(?:dp|gp\/product|gp\/aw\/d|exec\/obidos\/asin)\/([A-Z0-9]{10})(?![A-Z0-9])/gi;
+  for (const m of input.matchAll(urlRe)) found.add(m[1].toUpperCase());
+  const tokenRe = /\b(B0[A-Z0-9]{8})\b/gi;
+  for (const m of input.matchAll(tokenRe)) found.add(m[1].toUpperCase());
+  return [...found];
+}
+
+export function addToWatchlist(
+  items: Array<{
+    asin: string;
+    note?: string | null;
+    targetPrice?: number | null;
+    minDropPct?: number;
+    brand?: string | null;
+  }>,
+): { added: number; updated: number } {
+  const d = db();
+  const now = Math.floor(Date.now() / 1000);
+  const existsStmt = d.prepare("SELECT 1 FROM watchlist WHERE asin = ?");
+  const dealPrefillStmt = d.prepare(
+    `SELECT COALESCE(amz_title, md_title) AS title, COALESCE(amz_image, md_image) AS image, brand, price
+     FROM deals WHERE asin = ? ORDER BY last_seen DESC LIMIT 1`,
+  );
+  const upsertStmt = d.prepare(`
+    INSERT INTO watchlist (asin, note, brand, title, image, target_price, min_drop_pct, last_price, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(asin) DO UPDATE SET
+      note = COALESCE(excluded.note, watchlist.note),
+      brand = COALESCE(excluded.brand, watchlist.brand),
+      target_price = COALESCE(excluded.target_price, watchlist.target_price),
+      min_drop_pct = excluded.min_drop_pct
+  `);
+
+  let added = 0;
+  let updated = 0;
+  d.exec("BEGIN");
+  try {
+    for (const item of items) {
+      const asin = String(item.asin || "").trim().toUpperCase();
+      if (!/^[A-Z0-9]{10}$/.test(asin)) continue;
+      if (existsStmt.get(asin)) updated++;
+      else added++;
+
+      const prefill = dealPrefillStmt.get(asin) as
+        | { title: string | null; image: string | null; brand: string | null; price: number | null }
+        | undefined;
+      const targetPrice =
+        typeof item.targetPrice === "number" && Number.isFinite(item.targetPrice) && item.targetPrice > 0
+          ? item.targetPrice
+          : null;
+      const minDropPct = clamp(Number(item.minDropPct ?? 20), 5, 90, 20);
+      upsertStmt.run(
+        asin,
+        item.note ? String(item.note).trim().slice(0, 120) : null,
+        item.brand ? String(item.brand).trim().slice(0, 80) : prefill?.brand ?? null,
+        prefill?.title ?? null,
+        prefill?.image ?? null,
+        targetPrice,
+        minDropPct,
+        prefill?.price ?? null,
+        now,
+      );
+    }
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
+  return { added, updated };
+}
+
+export function removeFromWatchlist(asin: string): number {
+  const clean = String(asin || "").trim().toUpperCase();
+  return Number(db().prepare("DELETE FROM watchlist WHERE asin = ?").run(clean).changes);
+}
+
+export function clearWatchlist(): number {
+  return Number(db().prepare("DELETE FROM watchlist").run().changes);
+}
+
+export function listWatchlist({ q = "", limit = 100 }: { q?: string; limit?: number } = {}): WatchlistRow[] {
+  const where: string[] = [];
+  const args: (string | number)[] = [];
+  if (q.trim()) {
+    where.push("(asin || ' ' || COALESCE(title,'') || ' ' || COALESCE(brand,'') || ' ' || COALESCE(note,'')) LIKE ?");
+    args.push(`%${q.trim()}%`);
+  }
+  const sql = `SELECT * FROM watchlist ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY COALESCE(last_checked, created_at) DESC LIMIT ?`;
+  args.push(clamp(limit, 1, 500, 100));
+  return (db().prepare(sql).all(...args) as WatchlistRow[]).map((r) => ({ ...r }));
+}
+
+export function getWatchlistForCheck(limit = 100): WatchlistRow[] {
+  return (
+    db()
+      .prepare("SELECT * FROM watchlist ORDER BY COALESCE(last_checked, 0) ASC LIMIT ?")
+      .all(clamp(limit, 1, 300, 100)) as WatchlistRow[]
+  ).map((r) => ({ ...r }));
+}
+
+function compileBrandMatchers(keywordsCsv: string): Array<{ label: string; re: RegExp }> {
+  return String(keywordsCsv || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 2)
+    .map((label) => ({
+      label,
+      re: new RegExp(`(^|[^\\p{L}\\p{N}])${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\p{L}\\p{N}]|$)`, "iu"),
+    }));
+}
+
+function harvestCandidates(
+  candidates: Array<{
+    asin: string;
+    title: string;
+    image?: string | null;
+    brand?: string | null;
+    price?: number | null;
+  }>,
+  keywordsCsv: string,
+  maxTotal = 500,
+): number {
+  const matchers = compileBrandMatchers(keywordsCsv);
+  if (matchers.length === 0 || candidates.length === 0) return 0;
+
+  const d = db();
+  const currentTotal = Number(
+    (d.prepare("SELECT COUNT(*) AS c FROM watchlist").get() as { c?: number } | undefined)?.c ?? 0,
+  );
+  if (currentTotal >= maxTotal) return 0;
+
+  const now = Math.floor(Date.now() / 1000);
+  const insertStmt = d.prepare(`
+    INSERT OR IGNORE INTO watchlist (asin, note, brand, title, image, target_price, min_drop_pct, last_price, created_at)
+    VALUES (?,?,?,?,?,NULL,20,?,?)
+  `);
+
+  let added = 0;
+  d.exec("BEGIN");
+  try {
+    for (const c of candidates) {
+      if (currentTotal + added >= maxTotal) break;
+      const asin = String(c.asin || "").trim().toUpperCase();
+      if (!/^[A-Z0-9]{10}$/.test(asin)) continue;
+      const haystack = `${c.brand || ""} ${c.title || ""}`.trim();
+      if (!haystack) continue;
+      const matched = matchers.find((m) => m.re.test(haystack));
+      if (!matched) continue;
+
+      const res = insertStmt.run(
+        asin,
+        `Auto (${matched.label})`,
+        c.brand ?? matched.label,
+        c.title || null,
+        c.image || null,
+        typeof c.price === "number" && Number.isFinite(c.price) && c.price > 0 ? c.price : null,
+        now,
+      );
+      if (Number(res.changes) > 0) added++;
+    }
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
+  return added;
+}
+
+export function harvestExistingDealsToWatchlist(keywordsCsv: string, maxTotal = 500): number {
+  const rows = db()
+    .prepare(
+      `SELECT asin, COALESCE(amz_title, md_title) AS title, COALESCE(amz_image, md_image) AS image, brand, price
+       FROM deals
+       WHERE asin IS NOT NULL AND asin <> '' AND is_expired = 0
+       ORDER BY published_at DESC
+       LIMIT 1000`,
+    )
+    .all() as Array<{
+    asin: string;
+    title: string;
+    image: string | null;
+    brand: string | null;
+    price: number | null;
+  }>;
+  return harvestCandidates(rows, keywordsCsv, maxTotal);
+}
+
+export function harvestDealsArrayToWatchlist(deals: DealIn[], keywordsCsv: string, maxTotal = 500): number {
+  const candidates: Array<{
+    asin: string;
+    title: string;
+    image?: string | null;
+    brand?: string | null;
+    price?: number | null;
+  }> = [];
+  for (const x of deals) {
+    if (!x.asin) continue;
+    candidates.push({
+      asin: x.asin,
+      title: x.amzTitle || x.mdTitle,
+      image: x.amzImage || x.mdImage,
+      brand: x.brand,
+      price: x.price,
+    });
+  }
+  return harvestCandidates(candidates, keywordsCsv, maxTotal);
+}
+
+export type WatchlistCheckInput = {
+  asin: string;
+  title?: string | null;
+  image?: string | null;
+  brand?: string | null;
+  price: number | null;
+  oldPrice?: number | null;
+  inStock: boolean;
+};
+
+export function recordWatchlistChecks(results: WatchlistCheckInput[]): { checked: number; triggered: number } {
+  const d = db();
+  const now = Math.floor(Date.now() / 1000);
+  const phCutoff = now - 90 * 86400;
+
+  const wlGetStmt = d.prepare("SELECT * FROM watchlist WHERE asin = ?");
+  const phStatsStmt = d.prepare(
+    "SELECT COUNT(*) AS cnt, AVG(price) AS avg_p, MIN(price) AS min_p FROM price_history WHERE asin = ? AND recorded_at >= ?",
+  );
+  const phLatestStmt = d.prepare(
+    "SELECT price, recorded_at FROM price_history WHERE asin = ? ORDER BY recorded_at DESC LIMIT 1",
+  );
+  const phInsertStmt = d.prepare("INSERT INTO price_history (asin, price, old_price, recorded_at) VALUES (?,?,?,?)");
+  const wlUpdStmt = d.prepare(`
+    UPDATE watchlist SET
+      title = COALESCE(?, title),
+      image = COALESCE(?, image),
+      brand = COALESCE(?, brand),
+      last_price = COALESCE(?, last_price),
+      avg_price_90d = COALESCE(?, avg_price_90d),
+      lowest_price = COALESCE(?, lowest_price),
+      in_stock = ?,
+      last_checked = ?
+    WHERE asin = ?
+  `);
+
+  const triggeredDeals: DealIn[] = [];
+  let checked = 0;
+
+  d.exec("BEGIN");
+  try {
+    for (const r of results) {
+      const asin = String(r.asin || "").trim().toUpperCase();
+      if (!/^[A-Z0-9]{10}$/.test(asin)) continue;
+      const row = wlGetStmt.get(asin) as WatchlistRow | undefined;
+      if (!row) continue;
+      checked++;
+
+      const price = typeof r.price === "number" && Number.isFinite(r.price) && r.price > 0 ? r.price : null;
+      const oldPrice = typeof r.oldPrice === "number" && Number.isFinite(r.oldPrice) && r.oldPrice > 0 ? r.oldPrice : null;
+
+      const prevStats = phStatsStmt.get(asin, phCutoff) as
+        | { cnt: number; avg_p: number | null; min_p: number | null }
+        | undefined;
+      const prevCnt = Number(prevStats?.cnt ?? 0);
+      const prevAvg = prevStats?.avg_p != null ? Math.round(Number(prevStats.avg_p) * 100) / 100 : null;
+      const prevMin = prevStats?.min_p != null ? Math.round(Number(prevStats.min_p) * 100) / 100 : null;
+
+      if (price != null) {
+        const latest = phLatestStmt.get(asin) as { price: number; recorded_at: number } | undefined;
+        if (!latest || Math.abs(Number(latest.price) - price) >= 0.01 || now - Number(latest.recorded_at) >= 6 * 3600) {
+          phInsertStmt.run(asin, price, oldPrice, now);
+        }
+      }
+
+      const nextStats = phStatsStmt.get(asin, phCutoff) as
+        | { cnt: number; avg_p: number | null; min_p: number | null }
+        | undefined;
+      const nextAvg = nextStats?.avg_p != null ? Math.round(Number(nextStats.avg_p) * 100) / 100 : prevAvg;
+      const nextMin = nextStats?.min_p != null ? Math.round(Number(nextStats.min_p) * 100) / 100 : prevMin;
+
+      wlUpdStmt.run(
+        n(r.title),
+        n(r.image),
+        n(r.brand),
+        price,
+        nextAvg,
+        nextMin,
+        r.inStock ? 1 : 0,
+        now,
+        asin,
+      );
+
+      if (r.inStock && price != null) {
+        const refOld = oldPrice ?? (prevCnt >= 2 && prevAvg != null && prevAvg > price * 1.05 ? prevAvg : null);
+        const pct = refOld != null && refOld > price ? Math.round(100 * (1 - price / refOld)) : null;
+        const hitTarget = row.target_price != null && price <= row.target_price;
+        const hitAvgDrop = prevCnt >= 2 && prevAvg != null && price <= prevAvg * (1 - row.min_drop_pct / 100);
+        const hitListDrop = pct != null && pct >= row.min_drop_pct;
+
+        if (hitTarget || hitAvgDrop || hitListDrop) {
+          const isLowest = prevCnt >= 2 && prevMin != null && price < prevMin;
+          const isPriceError = (pct != null && pct >= 50) || (prevCnt >= 2 && prevAvg != null && price <= prevAvg * 0.5);
+          triggeredDeals.push({
+            threadId: -(600_000_000 + asinHash(asin)),
+            source: "watchlist",
+            sourceUrl: `https://www.amazon.de/dp/${asin}`,
+            asin,
+            amzTitle: r.title ?? row.title ?? `Amazon ${asin}`,
+            amzImage: r.image ?? row.image,
+            mdTitle: r.title ?? row.title ?? `Amazon ${asin}`,
+            brand: r.brand ?? row.brand,
+            price,
+            oldPrice: refOld,
+            percentage: pct,
+            publishedAt: now,
+            isExpired: 0,
+            isPriceError,
+            isLowest,
+          });
+        }
+      }
+    }
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
+
+  let triggered = 0;
+  if (triggeredDeals.length > 0) {
+    const up = upsertDeals(triggeredDeals);
+    triggered = up.count;
+  }
+  return { checked, triggered };
 }

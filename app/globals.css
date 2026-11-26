@@ -227,16 +227,23 @@ h2 { margin: 0 0 12px; font-size: 16px; }
 .src-camel { background: var(--warn-soft); color: var(--warn); }
 .src-paapi { background: #fef3c7; color: #92400e; }
 .src-keepa { background: #dcfce7; color: #166534; }
+.src-watchlist { background: #fce7f3; color: #9d174d; }
 @media (prefers-color-scheme: dark) {
   .src-monsterdealz { background: #2e1065; color: #c4b5fd; }
   .src-dealdoktor { background: #0c4a6e; color: #7dd3fc; }
   .src-paapi { background: #451a03; color: #fcd34d; }
   .src-keepa { background: #14532d; color: #86efac; }
+  .src-watchlist { background: #500724; color: #f9a8d4; }
 }
 .chk-group { display: grid; gap: 8px; margin-top: 12px; }
 .sub-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
 .sub-section h3 { margin: 0 0 8px; font-size: 13.5px; font-weight: 600; }
 .sub-hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.wl-form { display: grid; gap: 10px; margin-bottom: 14px; }
+.wl-form textarea {
+  font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--text); min-height: 68px; resize: vertical;
+}
 
 
 /* ───────── Public shop page ───────── */

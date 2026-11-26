@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import type { AdminStats, CrawlRunRow, DealRow, PublicAppSettings } from "@/lib/db";
+import type { AdminStats, CrawlRunRow, DealRow, PublicAppSettings, WatchlistRow } from "@/lib/db";
 import { CopyAffButtons } from "../CopyAffButton";
 
 type AdminPayload = {
@@ -9,6 +9,7 @@ type AdminPayload = {
   settings: PublicAppSettings;
   runs: CrawlRunRow[];
   deals: DealRow[];
+  watchlist: WatchlistRow[];
   crawling: boolean;
   crawlProgress?: string;
 };
@@ -26,6 +27,7 @@ const SOURCE_LABELS: Record<string, string> = {
   camel: "camel",
   paapi: "PA-API",
   keepa: "Keepa",
+  watchlist: "Watchlist",
 };
 
 const eur = (v: number | null) =>
@@ -75,6 +77,10 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
   const [notice, setNotice] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [showPw, setShowPw] = useState(false);
   const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
+  const [wlText, setWlText] = useState("");
+  const [wlTarget, setWlTarget] = useState("");
+  const [wlDropPct, setWlDropPct] = useState(20);
+  const [wlNote, setWlNote] = useState("");
 
   const refresh = useCallback(
     async (opts?: { q?: string; filter?: string; source?: string }) => {
@@ -172,12 +178,43 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
     }
   }
 
+  async function addWatchlist(e: React.FormEvent) {
+    e.preventDefault();
+    if (!wlText.trim()) return;
+    setBusy(true);
+    try {
+      const parsedTarget = wlTarget.trim() ? Number(wlTarget.replace(",", ".")) : null;
+      const res = await fetch("/api/admin/actions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "watchlist_add",
+          text: wlText,
+          targetPrice: parsedTarget && Number.isFinite(parsedTarget) && parsedTarget > 0 ? parsedTarget : null,
+          minDropPct: wlDropPct,
+          note: wlNote.trim() || null,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setWlText("");
+      setWlTarget("");
+      setWlNote("");
+      showMsg("ok", json.message || "Đã thêm vào Watchlist.");
+      await refresh();
+    } catch (err) {
+      showMsg("err", err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     void refresh({ q, filter, source: sourceFilter });
   }
 
-  const { stats, runs, deals, settings, crawling, crawlProgress } = data;
+  const { stats, runs, deals, watchlist, settings, crawling, crawlProgress } = data;
   const sourceBreakdown = Object.entries(stats.bySource)
     .filter(([, count]) => count > 0)
     .map(([k, count]) => `${SOURCE_LABELS[k] || k}: ${count}`)
@@ -275,7 +312,9 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
         <div className="kpi">
           <div className="kpi-label">Keepa Mini (Lịch sử giá)</div>
           <div className="kpi-val">{stats.trackedAsins} ASIN</div>
-          <div className="kpi-sub">Quá hạn giữ (&gt; {settings.retentionDays}d): {stats.olderThanRetention}</div>
+          <div className="kpi-sub">
+            Watchlist: {stats.watchlistCount} ASIN · Quá hạn (&gt; {settings.retentionDays}d): {stats.olderThanRetention}
+          </div>
         </div>
         <div className="kpi">
           <div className="kpi-label">Cập nhật thành công gần nhất</div>
@@ -383,6 +422,22 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                 onChange={(e) => setForm({ ...form, serverCrawlEnabled: e.target.checked })}
               />
               Bật auto crawl ngay trên server (đi qua Cloudflare WARP proxy <code>warp:1080</code>)
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.enableWatchlist}
+                onChange={(e) => setForm({ ...form, enableWatchlist: e.target.checked })}
+              />
+              Bật quét <strong>Watchlist ASIN (Keepa riêng)</strong> mỗi lần crawl
+            </label>
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={form.watchlistAutoHarvest}
+                onChange={(e) => setForm({ ...form, watchlistAutoHarvest: e.target.checked })}
+              />
+              Tự thêm ASIN thuộc <strong>Brand/Từ khoá</strong> bên dưới vào Watchlist (tối đa 500 ASIN)
             </label>
           </div>
 
@@ -608,6 +663,7 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
               <option value="camel">Camel DE</option>
               <option value="paapi">PA-API</option>
               <option value="keepa">Keepa</option>
+              <option value="watchlist">Watchlist</option>
             </select>
             <select
               value={filter}
@@ -764,6 +820,157 @@ export default function AdminClient({ initial }: { initial: AdminPayload }) {
                           Xoá
                         </button>
                       </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <h2>Watchlist ASIN — Keepa riêng ({stats.watchlistCount} ASIN)</h2>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={busy}
+              onClick={() => void runAction("watchlist_check")}
+            >
+              Quét Watchlist ngay
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => void runAction("watchlist_harvest")}
+            >
+              Gom ASIN Brand từ kho
+            </button>
+            {stats.watchlistCount > 0 && (
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={busy}
+                onClick={() =>
+                  void runAction("watchlist_clear", {}, `Xoá toàn bộ ${stats.watchlistCount} ASIN khỏi Watchlist?`)
+                }
+              >
+                Xoá hết
+              </button>
+            )}
+          </div>
+        </div>
+
+        <form className="wl-form" onSubmit={addWatchlist}>
+          <textarea
+            placeholder="Dán link Amazon.de hoặc mã ASIN (mỗi dòng 1 hoặc nhiều link, vd: https://www.amazon.de/dp/B0..., B09...)"
+            value={wlText}
+            onChange={(e) => setWlText(e.target.value)}
+          />
+          <div className="field-grid">
+            <label className="field">
+              <span>Giá mục tiêu (€, tuỳ chọn)</span>
+              <input
+                type="text"
+                placeholder="vd: 49.99"
+                value={wlTarget}
+                onChange={(e) => setWlTarget(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>Hoặc báo khi giảm ≥ (%) so với TB 90 ngày</span>
+              <input
+                type="number"
+                min={5}
+                max={90}
+                value={wlDropPct}
+                onChange={(e) => setWlDropPct(Number(e.target.value))}
+              />
+            </label>
+            <label className="field">
+              <span>Ghi chú (tuỳ chọn)</span>
+              <input
+                type="text"
+                placeholder="vd: Nồi WMF, Bỉm Pampers..."
+                value={wlNote}
+                onChange={(e) => setWlNote(e.target.value)}
+              />
+            </label>
+            <div className="field" style={{ justifyContent: "flex-end" }}>
+              <button className="btn btn-primary" type="submit" disabled={busy || !wlText.trim()}>
+                + Thêm vào Watchlist
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div className="table-wrap">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Sản phẩm / ASIN</th>
+                <th>Giá hiện tại</th>
+                <th>TB 90 ngày / Đáy</th>
+                <th>Ngưỡng báo</th>
+                <th>Kiểm tra</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody>
+              {watchlist.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="muted" style={{ textAlign: "center", padding: 20 }}>
+                    Chưa có ASIN nào trong Watchlist. Dán link/ASIN ở trên hoặc bấm &ldquo;Gom ASIN Brand từ kho&rdquo;.
+                  </td>
+                </tr>
+              )}
+              {watchlist.map((w) => {
+                const amzHref = `https://amazon.de/dp/${w.asin}${settings.amazonTag ? `?tag=${encodeURIComponent(settings.amazonTag)}` : ""}`;
+                return (
+                  <tr key={w.asin}>
+                    <td>
+                      <div className="deal-cell">
+                        {w.image && <img className="thumb" src={w.image} alt="" loading="lazy" referrerPolicy="no-referrer" />}
+                        <div className="deal-cell-txt">
+                          <a href={amzHref} target="_blank" rel="noopener noreferrer" className="deal-cell-title">
+                            {w.title || w.asin}
+                          </a>
+                          <div className="meta">
+                            <code>{w.asin}</code>
+                            {w.brand ? ` · ${w.brand}` : ""}
+                            {w.note ? ` · ${w.note}` : ""}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="nowrap">
+                      <strong>{eur(w.last_price)}</strong>
+                      {!w.in_stock && <div className="meta err">Hết hàng</div>}
+                    </td>
+                    <td className="nowrap">
+                      <div>TB: {eur(w.avg_price_90d)}</div>
+                      <div className="meta">Đáy: {eur(w.lowest_price)}</div>
+                    </td>
+                    <td className="nowrap">
+                      {w.target_price != null ? <div>≤ {eur(w.target_price)}</div> : null}
+                      <div className="meta">Giảm ≥ {w.min_drop_pct}%</div>
+                    </td>
+                    <td className="nowrap">
+                      <div>{w.last_checked ? fmtTime(w.last_checked) : "Chưa quét"}</div>
+                      <div className="meta">{w.last_checked ? ago(w.last_checked) : "Đợi lượt tới"}</div>
+                    </td>
+                    <td className="nowrap">
+                      <button
+                        type="button"
+                        className="btn-sm btn-sm-danger"
+                        disabled={busy}
+                        onClick={() => void runAction("watchlist_remove", { asin: w.asin })}
+                      >
+                        Xoá
+                      </button>
                     </td>
                   </tr>
                 );

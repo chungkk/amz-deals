@@ -1,14 +1,19 @@
 import {
+  addToWatchlist,
   clearAllDeals,
+  clearWatchlist,
   deleteDeal,
+  extractAsinsFromText,
   getSettings,
+  harvestExistingDealsToWatchlist,
   pruneExpiredDeals,
   pruneOldDeals,
   recordRun,
+  removeFromWatchlist,
   resetNoAsin,
   setDealExpired,
 } from "@/lib/db";
-import { isCrawlRunning, runCrawl, runPriceCheck } from "@/lib/scheduler";
+import { isCrawlRunning, runCrawl, runPriceCheck, runWatchlistCheck } from "@/lib/scheduler";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +21,11 @@ type ActionPayload = {
   action?: string;
   threadId?: number;
   expired?: boolean;
+  text?: string;
+  asin?: string;
+  targetPrice?: number | null;
+  minDropPct?: number;
+  note?: string;
 };
 
 export async function POST(req: Request) {
@@ -112,6 +122,58 @@ export async function POST(req: Request) {
         ...res,
         message: `Đã kiểm tra ${res.checked} ASIN qua PA-API: cập nhật ${res.updated}, hết hạn ${res.expired}.`,
       });
+    }
+
+    case "watchlist_add": {
+      const asins = extractAsinsFromText(String(body.text || ""));
+      if (asins.length === 0) {
+        return Response.json(
+          { ok: false, error: "Không tìm thấy ASIN hợp lệ nào (hỗ trợ link amazon.de/dp/... hoặc mã B0...)." },
+          { status: 400 },
+        );
+      }
+      const targetPrice =
+        typeof body.targetPrice === "number" && Number.isFinite(body.targetPrice) && body.targetPrice > 0
+          ? body.targetPrice
+          : null;
+      const minDropPct = typeof body.minDropPct === "number" ? body.minDropPct : 20;
+      const note = body.note ? String(body.note).trim() : null;
+      const r = addToWatchlist(asins.map((asin) => ({ asin, targetPrice, minDropPct, note })));
+      return Response.json({
+        ok: true,
+        ...r,
+        message: `Đã thêm ${r.added} ASIN mới${r.updated ? `, cập nhật ${r.updated} ASIN` : ""} vào Watchlist.`,
+      });
+    }
+
+    case "watchlist_remove": {
+      const asin = String(body.asin || "").trim().toUpperCase();
+      if (!asin) return Response.json({ error: "asin required" }, { status: 400 });
+      const deleted = removeFromWatchlist(asin);
+      return Response.json({ ok: true, deleted, message: deleted ? `Đã xoá ${asin} khỏi Watchlist.` : "Không tìm thấy ASIN." });
+    }
+
+    case "watchlist_clear": {
+      const deleted = clearWatchlist();
+      return Response.json({ ok: true, deleted, message: `Đã xoá toàn bộ ${deleted} ASIN trong Watchlist.` });
+    }
+
+    case "watchlist_harvest": {
+      const { paapiKeywords } = getSettings();
+      const added = harvestExistingDealsToWatchlist(paapiKeywords);
+      return Response.json({
+        ok: true,
+        added,
+        message:
+          added > 0
+            ? `Đã tự gom thêm ${added} ASIN theo danh sách brand/từ khoá vào Watchlist.`
+            : "Không có thêm ASIN brand mới nào (hoặc đã có sẵn trong Watchlist).",
+      });
+    }
+
+    case "watchlist_check": {
+      const res = await runWatchlistCheck("admin-watchlist");
+      return Response.json(res);
     }
 
     default:
